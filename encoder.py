@@ -1,8 +1,11 @@
+import io
 import os
 import shutil
-import qrcode
+import struct
 import math
 import argparse
+from PIL import Image
+import tqdm
 
 def get_parser():
     parser = argparse.ArgumentParser(
@@ -17,34 +20,33 @@ class File2Image:
         pass
 
     def encode_qrcode(self, data):
-        chunk_size = 4296   # version 40, L error correction
-        def generate_qr_code(data):
-            qr = qrcode.QRCode(
-                version=40,
-                error_correction=qrcode.constants.ERROR_CORRECT_L,
-                box_size=10,
-                border=4,
-            )
-            qr.add_data(data)
-            qr.make(fit=True)
+        import qrcode
+        qr = qrcode.QRCode(
+            version=40,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(data)
+        qr.make(fit=True)
 
-            img = qr.make_image(fill_color="black", back_color="white")
-
-            return img
-
-        image_list = []
-        for i in range(0, len(data), chunk_size):
-            chunk_data = data[i:i + chunk_size]
-            img = generate_qr_code(chunk_data)
-            
-            image_list.append(img)
-        return image_list
+        img = qr.make_image(fill_color="black", back_color="white")
+        return img
 
     def convert(self, file_path, output_dir):
         with open(file_path, 'rb') as f:
             file_data = f.read()
         print(f"File size: {len(file_data)} bytes.")
-        image_list = self.encode_qrcode(file_data)
+        
+        chunk_size = 2953-4   # version 40, L error correction
+        image_list = []
+        
+        for i in tqdm.tqdm(range(0, len(file_data), chunk_size)):
+            # add header to chunk data
+            header = struct.pack('i', i)
+            chunk_data = header + file_data[i:i + chunk_size]
+            img = self.encode_qrcode(chunk_data)
+            image_list.append(img)
         print(f"Generated {len(image_list)} images.")
         
         if os.path.exists(output_dir):

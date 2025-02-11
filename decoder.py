@@ -1,6 +1,7 @@
 import os
 import re
 import argparse
+import struct
 from pyzbar.pyzbar import decode
 from PIL import Image
 
@@ -24,18 +25,21 @@ class Image2File:
     def convert(self, input_dir, output_file):
         file_list = []
         for file in os.listdir(input_dir):
-            m = re.match(r"img_(\d+)\.png", file)
-            if m:
-                file_list.append((int(m.group(1)), file))
+            if not file.endswith('.png'):
+                continue
+            file_list.append(file)
         print(f"Found {len(file_list)} images.")
         
         # parallel decode
         data_list = []
-        for i,file in file_list:
+        for file in file_list:
             # read image
             img = Image.open(os.path.join(input_dir, file))
-            data = self.decode_qrcode(img)
-            data_list.append((i, data))
+            raw_data = self.decode_qrcode(img)
+            # parse header
+            idx = struct.unpack('i', raw_data[:4])[0]
+            data = raw_data[4:]
+            data_list.append((idx, data))
         
         # concat
         data_list.sort(key=lambda x: x[0])
