@@ -1,3 +1,4 @@
+import base64
 import io
 import multiprocessing
 import os
@@ -32,7 +33,11 @@ class File2Image:
         else:
             self.nproc = nproc
 
-    def encode_qrcode(self, data):
+    def encode_qrcode(self, data_):
+        # qrcode 实际编码二进制数据时，实际对数据有要求，需要满足ISO/IEC 8859-1
+        # 导致编码和解码后，得到错误数据，解决办法为使用base32编码（损耗6.25%）
+        # https://github.com/tplooker/binary-qrcode-tests/tree/master
+        data = base64.b32encode(data_)
         qr = qrcode.QRCode(
             version=40,
             error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -58,7 +63,8 @@ class File2Image:
             file_data = f.read()
         print(f"File size: {len(file_data)} bytes.")
 
-        chunk_size = 2953 - 4  # version 40, L error correction
+        # 2593/1.0625 = 2440
+        chunk_size = 2440 - 4  # version 40, L error correction
         manager = multiprocessing.Manager()
         result_queue = manager.Queue()
         pool = multiprocessing.Pool(processes=self.nproc)
