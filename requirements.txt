@@ -1,2 +1,4 @@
+qrcode
 pyzbar
+tqdm
 Pillow
