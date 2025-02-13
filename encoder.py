@@ -12,19 +12,7 @@ import qrcode.util
 import qrcode
 from PIL import Image, ImageTk
 import tkinter as tk
-
-class timer():
-    def __init__(self):
-        self.t0 = time.time()
-    
-    def elapsed(self):
-        return time.time() - self.t0
-    
-    def reset(self):
-        t1 = time.time()
-        elapsed = t1 - self.t0
-        self.t0 = t1
-        return elapsed
+from util import timer
 
 def png_to_video(image_dir, output_path, fps=24):
     command = [
@@ -124,7 +112,7 @@ class File2Image:
 
         # multiprocessing encoding
         for i in range(self.num_chunks):
-            header = struct.pack("i", i)
+            header = struct.pack("HH", i, self.num_chunks)
             chunk_data = header + file_data[i * chunk_size : (i + 1) * chunk_size]
             pool.apply_async(self.process_chunk, (i, chunk_data, result_queue))
         pool.close()

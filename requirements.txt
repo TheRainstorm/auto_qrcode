@@ -2,3 +2,4 @@ qrcode
 pyzbar
 tqdm
 Pillow
+mss
