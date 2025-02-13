@@ -17,14 +17,17 @@ def get_parser():
     parser.add_argument("-o", "--output",
                         default="decoded.bin", help="output file path.")
     parser.add_argument("-n", "--nproc", type=int, default=-1, help="multiprocess")
+    parser.add_argument("-r", "--region", default="",
+                        help="region to capture, format: mon_id:width:height:offset_top:offset_left")
     return parser
 
 class Image2File:
-    def __init__(self, nproc=1):
+    def __init__(self, nproc=1, region=''):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
             self.nproc = nproc
+        self.region = region
 
     def decode_qrcode(self, img):
         decoded = decode(img)
@@ -73,18 +76,31 @@ class Image2File:
     def input_from_screen(self):
         import mss
         sct = mss.mss()
-        mon_id = 2
+        region_split = self.region.split(':')
+        mon_id = 1
+        if len(region_split) >= 1 and region_split[0]:
+            mon_id = int(region_split[0])
         mon = sct.monitors[mon_id]
+
+        width, height = mon["width"], mon["height"]
+        if len(region_split) >= 3 and region_split[1] and region_split[2]:
+            width = int(region_split[1])
+            height = int(region_split[2])
+        
+        offset_t = offset_l = 0
+        if len(region_split) >= 5 and region_split[3] and region_split[4]:
+            offset_t = int(region_split[3])
+            offset_l = int(region_split[4])
+        
         # The screen part to capture
-        # target_width, target_height = 1000, 1000
-        target_width, target_height = mon["width"], mon["height"]
         monitor = {
-            "top": mon["top"],
-            "left": mon["left"],
-            "width": target_width,
-            "height": target_height,
+            "top": mon["top"] + offset_t,
+            "left": mon["left"] + offset_l,
+            "width": width,
+            "height": height,
             "mon": mon_id,
         }
+        print(f"Capture region: {monitor}")
         
         num_chunks = -1
         not_visited = -1
@@ -97,6 +113,9 @@ class Image2File:
             print(f"Progress: {len(collected)}/{num_chunks}, one iter: {elap:.2f}s speed: {1/elap if elap else 0:.3f} iter/s \r", end='')
             sct_img = sct.grab(monitor)
             img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            if i==1:
+                # write the first image to disk
+                img.save("first.png")
             raw_data = self.decode_qrcode(img)
             if raw_data is None:
                 continue
@@ -129,5 +148,5 @@ class Image2File:
 if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
-    i2f = Image2File(args.nproc)
+    i2f = Image2File(args.nproc, args.region)
     i2f.convert(args.output, input_mode=args.mode, input_dir=args.input_dir)
