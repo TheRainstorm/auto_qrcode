@@ -30,12 +30,19 @@ $ python encoder.py -i encoder.py -r 80:80:-0:-0 -Q 7 -F 30
 File size: 7577 bytes.
 QR code version 8 corr: L max bytes: 194 base32_valid: 165
 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 48/48 [00:02<00:00, 16.67it/s] 
-```
 
-decoder
-
-```shell
 $ python decoder.py -m screen_dxcam -r 2:80:80:-0:-0
 Screen: 1, Capture region: (1840, 1000, 1920, 1080)
 output to decoded.txt size 7140 bytes speed 886.99 B/s.s, speed: 39.001 iter/s
+```
+
+```shell
+$ python encoder.py -i /e/virtio-win-gt-x64.msi -F 20
+File size: 4885504 bytes.
+QR code version 40 corr: L max bytes: 2956 base32_valid: 2529
+Chunk size: 2521 bytes, num_chunks: 1938
+Display in window[1920x1080] 274x274+823+403 fps 20
+
+$ python decoder.py -m screen_dxcam -r 1:550:550
+output to decoded.txt size 4885504 bytes speed 21534.02 B/s.r: 0.04s speed: 25.634fps  # 2 loop, peak at 40KB/s
 ```

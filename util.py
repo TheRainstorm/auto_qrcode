@@ -45,12 +45,12 @@ def parse_region_mon(region_split):
         mon_id = int(region_split[0])
     return mon_id
 
-def parse_region(region_split, mon_width, mon_height):
+def parse_region(region_split, mon_width, mon_height, fit_pixel=0):
     def get_size(v):
-        value_map = { 'd': min(mon_width, mon_height)*3//4, 'w': mon_width, 'h': mon_height }
+        value_map = { 'd': min(mon_width, mon_height)*3//4, 'w': mon_width, 'h': mon_height, 'f': fit_pixel }
         return value_map[v] if v in value_map else int(v)
     
-    width = height = 'd'
+    width = height = 'f'
     if len(region_split) >= 2 and region_split[0] and region_split[1]:
         width, height = region_split[0], region_split[1]
     width, height = get_size(width), get_size(height)

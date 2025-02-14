@@ -16,7 +16,7 @@ def get_parser():
     # 三个参数对应三种模式
     parser.add_argument(
         "-m", "--mode",
-        default="screen_win32", choices=['dir', 'screen_mss', 'screen_dxcam', 'screen_win32'],
+        default="screen_dxcam", choices=['dir', 'screen_mss', 'screen_dxcam', 'screen_win32'],
         help="input from dir or screen snapshot."
     )
     parser.add_argument("-i", "--input-dir", default='./out', help="dir: The dir containing the images to decode, use this for testing.")
@@ -48,8 +48,8 @@ class Image2File:
         raw_data = self.decode_qrcode(img)
         if raw_data is None:
             return -1, -1, b''
-        idx, num_chunks = struct.unpack('HH', raw_data[:4])
-        data = raw_data[4:]
+        idx, num_chunks = struct.unpack('II', raw_data[:8])
+        data = raw_data[8:]
         return idx, num_chunks, data
     
     def process_image(self, file_path, result_queue):
@@ -80,7 +80,7 @@ class Image2File:
         with open(output_file, 'wb') as f:
             f.write(self.data_merged)
         elap = tim.elapsed()
-        print(f"output to {output_file} size {len(self.data_merged)} bytes speed {len(self.data_merged)/elap:.2f} B/s.")
+        print(f"output to {output_file} size: {len(self.data_merged)}B elpased: {elap:.0f}s speed {len(self.data_merged)/elap:.2f} B/s.")
 
     def input_from_dir(self, input_dir):
         file_list = []
@@ -124,7 +124,7 @@ class Image2File:
                 "height": height,
                 "mon": mon_id,
             }
-            print(f"Screen: {mon_id}, Capture region: {width}x{height}+{x}+{y}")
+            print(f"Screen: {mon_id}[{mon["width"]}x{mon["height"]}], Capture region: {width}x{height}+{x}+{y}")
             
             def capture_img():
                 sct_img = sct.grab(monitor)
@@ -136,12 +136,12 @@ class Image2File:
             camera = dxcam.create(output_idx=mon_id, output_color="RGB")
             width, height, x, y = parse_region(region_split[1:], camera.width, camera.height)
             region = (x, y, x + width, y + height)
-            print(f"Screen: {mon_id+1}, Capture region: {width}x{height}+{x}+{y}")
+            print(f"Screen: {mon_id+1}[{camera.width}x{camera.height}], Capture region: {width}x{height}+{x}+{y}")
             
-            camera.start(target_fps=60, video_mode=True, region=region)
+            camera.start(target_fps=60, region=region)
             def capture_img():
                 frame = camera.get_latest_frame()
-                # frame = camera.grab()
+                # frame = camera.grab(region=region)
                 return Image.fromarray(frame)
         else:
             hwnd = get_hwnd(win_title)
@@ -154,23 +154,26 @@ class Image2File:
         num_chunks = remained = -1     # 总图片数
         collected = set()   # 记录已经解码的图片
         decoded_bytes = 0
+        max_idx = -1
         tim = timer()
         while remained != 0:
             img = capture_img()
             elap = tim.reset()
-            print(f"Progress: {len(collected)}/{num_chunks}, avg speed: {decoded_bytes/tim.since_init():.2f} B/s, one iter: {elap:.2f} s, speed: {1/elap if elap else 0:.3f} iter/s \r", end='')
+            print(f"max: {max_idx:5d}{' ' if max_idx<= len(collected) else 'M'} len/tot: {len(collected):>5d}/{num_chunks:<5d} speed: {decoded_bytes/tim.since_init():.2f} B/s each iter: {elap:.2f}s speed: {1/elap:.3f}fps \r", end='')
             
             idx, num_chunks, data = self.parse_img(img)
             if idx == -1:  # parse empty
                 continue
             
             if remained == -1:
+                tim = timer()
                 remained = num_chunks
                 data_list = [b'' for _ in range(num_chunks)]
             if idx not in collected:
                 collected.add(idx)
                 data_list[idx] = data
                 decoded_bytes += len(data)
+                max_idx = max(max_idx, idx)
                 remained -= 1
         if camera in locals():
             camera.stop()

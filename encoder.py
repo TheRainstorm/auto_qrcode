@@ -34,7 +34,7 @@ def get_parser():
     parser.add_argument(
         "-r", "--region", default="",
         help="screen: display region, width:height:offset_left:offset_top. "
-            "widht/height: int|d|w|h, 'd' means default 3/4*min(w,h). "
+            "widht/height: int|d|w|h|f, 'd' means default 3/4*min(w,h). f: QR code fit pixel. "
             "Offset startwith '-' means from right/bottom, 'c' means center"
     )
     parser.add_argument(
@@ -44,20 +44,28 @@ def get_parser():
         "-Q", "--qr-version", type=int, default=40, help="QRcode version"
     )
     parser.add_argument(
+        "-f", "--qr-fit-factor", type=float, default=1.5, help="QRcode fit pixel=(25+4*version+2(border))*fit_factor"
+    )
+    parser.add_argument(
         "-F", "--fps", type=int, default=10, help="output screen display image fps"
+    )
+    parser.add_argument(
+        "-S", "--sleep", action='store_true', help="sleep 5 seconds to prepare"
     )
     
     return parser
 
 class File2Image:
-    def __init__(self, nproc=1, qr_version=40):
+    def __init__(self, nproc=1, qr_version=40, qr_fit_factor=1.5):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
             self.nproc = nproc
         self.qr_version = qr_version
-        self.qr_boxsize = 4
+        self.qr_boxsize = 1
+        self.qr_border = 1
         self.correction = qrcode.constants.ERROR_CORRECT_L
+        self.qr_fit_factor = qr_fit_factor
 
     def encode_qrcode(self, data_):
         # qrcode 实际编码二进制数据时，实际对数据有要求，需要满足ISO/IEC 8859-1
@@ -68,7 +76,7 @@ class File2Image:
             version=self.qr_version,
             error_correction=self.correction,
             box_size=self.qr_boxsize,   # in pixels
-            border=1,
+            border=self.qr_border,
         )
         qr.add_data(data)
         qr.make(fit=True)
@@ -85,7 +93,7 @@ class File2Image:
         qr_maxbytes = qrcode.util.BIT_LIMIT_TABLE[self.correction][self.qr_version]//8
         base32_valid = int(qr_maxbytes/1.0625/1.1)  # 理论计算结果超出限制，除以 1.1 简单修正一下
         print(f"QR code version {self.qr_version} corr: L max bytes: {qr_maxbytes} base32_valid: {base32_valid}")
-        return base32_valid - 4  # 4 bytes for header
+        return base32_valid - 8  # 8 bytes for header
 
     def convert(self, file_path, output_mode='screen', output_dir="", fps=10, region=''):
         with open(file_path, "rb") as f:
@@ -94,6 +102,7 @@ class File2Image:
 
         chunk_size = self.get_chunk_size()
         self.num_chunks = math.ceil(len(file_data) / chunk_size)
+        print(f"Chunk size: {chunk_size} bytes, num_chunks: {self.num_chunks}")
         
         manager = multiprocessing.Manager()
         result_queue = manager.Queue()
@@ -101,7 +110,7 @@ class File2Image:
 
         # multiprocessing encoding
         for i in range(self.num_chunks):
-            header = struct.pack("HH", i, self.num_chunks)
+            header = struct.pack("II", i, self.num_chunks)
             chunk_data = header + file_data[i * chunk_size : (i + 1) * chunk_size]
             pool.apply_async(self.process_chunk, (i, chunk_data, result_queue))
         pool.close()
@@ -133,13 +142,14 @@ class File2Image:
 
     def output_screen(self, result_queue, fps=1, region=''):
         root = tk.Tk()
-        width, height, x, y = parse_region(region.split(':'), root.winfo_screenwidth(), root.winfo_screenheight())
+        fit_pixel = int((self.qr_version * 4 + 21 + 2*self.qr_border) * self.qr_fit_factor) # default times 1.5, version 40 -> 275x275
+        width, height, x, y = parse_region(region.split(':'), root.winfo_screenwidth(), root.winfo_screenheight(), fit_pixel=fit_pixel)
         root.overrideredirect(True) # no window border (also no close button)
         root.geometry(f'{width}x{height}+{x}+{y}')
         root.attributes('-topmost', True)
         label = tk.Label(root, borderwidth=0)   # no inner padding
         label.pack(expand=True, fill=tk.BOTH)
-        print(f"Display in window {width}x{height}+{x}+{y} fps {fps}")
+        print(f"Display in window[{root.winfo_screenwidth()}x{root.winfo_screenheight()}] {width}x{height}+{x}+{y} fps {fps}")
         
         def quit_app(event):
             if event and event.char in ['q', 'Q', ' '] or\
@@ -148,13 +158,13 @@ class File2Image:
         root.bind('<Key>', quit_app)
         
         def update_image(label, img):
-            label.img = img
             label.configure(image=img)
             label.update()
         
         img_tk_list = []
         tim = timer()
         for i in tqdm.tqdm(range(self.num_chunks)):
+            tim.reset()
             image_ndarry = result_queue.get()
             img = Image.fromarray(image_ndarry)
             
@@ -163,12 +173,13 @@ class File2Image:
         
             img_tk = ImageTk.PhotoImage(img_resized)
             img_tk_list.append(img_tk)
-            e = tim.reset()
+            e = tim.elapsed()
             if e < 1 / fps:
                 time.sleep(1 / fps - e)
             update_image(label, img_tk)
         
         def update_image_timer(label, img_tk_list, index=0):
+            print(f"current idx: {index}\r", end='')
             label.configure(image=img_tk_list[index])
             label.img = img_tk_list[index]
             next_index = (index + 1) % len(img_tk_list)
@@ -184,6 +195,9 @@ class File2Image:
 if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
-    f2i = File2Image(args.nproc, args.qr_version)
+    if args.sleep:
+        print("Sleep 5 seconds to prepare...")
+        time.sleep(5)
+    f2i = File2Image(nproc=args.nproc, qr_version=args.qr_version, qr_fit_factor=args.qr_fit_factor)
     f2i.convert(args.input, output_mode=args.mode,
                 output_dir=args.output_dir, region=args.region, fps=args.fps)
