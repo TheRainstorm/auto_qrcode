@@ -31,7 +31,9 @@ def get_parser():
         "-o", "--output-dir", default="./out", help="dir/video: output image/video directory"
     )
     parser.add_argument(
-        "-r", "--region", default="1000:1000", help="screen: display region, width:height:offset_top:offset_left"
+        "-r", "--region", default="80:80:-0:-0",
+        help="screen: display region, width:height:offset_left:offset_top. "
+            "widht/height 'd' means default 3/4 screen size. Offset startwith '-' means from right/bottom, 'c' means center"
     )
     parser.add_argument(
         "-n", "--nproc", type=int, default=-1, help="multiprocess encoding"
@@ -52,6 +54,7 @@ class File2Image:
         else:
             self.nproc = nproc
         self.qr_version = qr_version
+        self.qr_boxsize = 4
         self.correction = qrcode.constants.ERROR_CORRECT_L
 
     def encode_qrcode(self, data_):
@@ -62,8 +65,8 @@ class File2Image:
         qr = qrcode.QRCode(
             version=self.qr_version,
             error_correction=self.correction,
-            box_size=10,
-            border=4,
+            box_size=self.qr_boxsize,   # in pixels
+            border=1,
         )
         qr.add_data(data)
         qr.make(fit=True)
@@ -132,24 +135,37 @@ class File2Image:
 
     def output_screen(self, result_queue, fps=1, region=''):
         region_split = region.split(':')
-        width, height = 1000, 1000
-        if len(region_split) >= 2 and region_split[0] and region_split[1]:
-            width = int(region_split[0])
-            height = int(region_split[1])
-        
-        offset_t = offset_l = 0
-        if len(region_split) >= 4 and region_split[2] and region_split[3]:
-            offset_t = int(region_split[2])
-            offset_l = int(region_split[3])
-        
         root = tk.Tk()
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        
+        width = height = min(screen_width, screen_height) * 3 // 4
+        if len(region_split) >= 2 and region_split[0] and region_split[1]:
+            if region_split[0] != 'd':  # default
+                width = int(region_split[0])
+                height = int(region_split[1])
+        
+        o1 = o2 = 'c'
+        if len(region_split) >= 2 and region_split[2] and region_split[3]:
+            o1 = region_split[2]
+            o2 = region_split[3]
+        def get_offset(o, screen_size, window_size):
+            if o.startswith('-'):
+                return screen_size - window_size + int(o)
+            elif o=='c':
+                return (screen_size - window_size) // 2
+            else:
+                return int(o)
+            
         root.overrideredirect(True) # no window border (also no close button)
-        root.geometry(f'{width}x{height}+{offset_t}+{offset_l}')
+        root.geometry(f'{width}x{height}+{get_offset(o1, screen_width, width)}+{get_offset(o2, screen_height, height)}')
+        root.attributes('-topmost', True)
         label = tk.Label(root, borderwidth=0)   # no inner padding
         label.pack(expand=True, fill=tk.BOTH)
         
         def quit_app(event):
-            if event.char in ['q', 'Q', ' ']:
+            if event and event.char in ['q', 'Q', ' '] or\
+                (event.keysym == 'c' and event.state & 0x4):  # ctrl+c
                 root.destroy()
         root.bind('<Key>', quit_app)
         
@@ -182,7 +198,10 @@ class File2Image:
         
         # display repeatly
         update_image_timer(label, img_tk_list)
-        root.mainloop()
+        try:
+            root.mainloop()
+        except KeyboardInterrupt:
+            root.destroy()
     
 if __name__ == "__main__":
     parser = get_parser()

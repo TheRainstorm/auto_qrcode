@@ -12,7 +12,7 @@ def get_parser():
     parser = argparse.ArgumentParser(
         description="Convert a file to a series of QR codes.")
     parser.add_argument("-o", "--output",
-                        default="decoded.bin", help="output file path.")
+                        default="decoded.txt", help="output file path.")
     # 三个参数对应三种模式
     parser.add_argument(
         "-m", "--mode",
@@ -20,7 +20,9 @@ def get_parser():
         help="input from dir or screen snapshot."
     )
     parser.add_argument("-i", "--input-dir", default='./out', help="dir: The dir containing the images to decode, use this for testing.")
-    parser.add_argument("-r", "--region", default='2:1000:1000', help="screen_mss: screen region to capture, format: mon_id:width:height:offset_top:offset_left")
+    parser.add_argument("-r", "--region",
+                        help="Screen_mss: screen region to capture, format: mon_id:width:height:offset_left:offset_top. "
+                        "mon_id is the monitor id, default 1. Offset startwith '-' means from right/bottom, 'c' means center")
     parser.add_argument("-w", "--win-title", help="screen_win32: title of window to capture")
     parser.add_argument("-n", "--nproc", type=int, default=-1, help="multiprocess")
     return parser
@@ -136,8 +138,6 @@ class Image2File:
                 data_list[idx] = data
                 decoded_bytes += len(data)
                 remained -= 1
-                # progress
-                print(f"Decoded {idx} ")
         self.data_merged = b"".join([d for d in data_list])
 
 if __name__ == "__main__":

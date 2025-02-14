@@ -20,6 +20,7 @@ class timer():
     def since_init(self):
         return self.t0 - self.t0_init
 
+# Encoder
 def png_to_video(image_dir, output_path, fps=24):
     command = [
         "ffmpeg",
@@ -37,7 +38,8 @@ def png_to_video(image_dir, output_path, fps=24):
         print(f"创建视频时出错：{e}")
     except FileNotFoundError:
         print("错误：FFmpeg 未找到。请确保已安装 FFmpeg 并将其添加到系统路径。")
-
+    
+# decoder
 import mss
 def setup_mss(region):
     sct = mss.mss()
@@ -52,15 +54,24 @@ def setup_mss(region):
         width = int(region_split[1])
         height = int(region_split[2])
     
-    offset_t = offset_l = 0
+    o1 = o2 = 'c'
     if len(region_split) >= 5 and region_split[3] and region_split[4]:
-        offset_t = int(region_split[3])
-        offset_l = int(region_split[4])
-    
+        o1 = region_split[3]
+        o2 = region_split[4]
+
+    def get_offset(o, screen_size, window_size):
+        if o.startswith('-'):
+            return screen_size - window_size + int(o)
+        elif o=='c':
+            return (screen_size - window_size) // 2
+        else:
+            return int(o)
+    x = get_offset(o1, mon["width"], width)
+    y = get_offset(o2, mon["height"], height)
     # The screen part to capture
     monitor = {
-        "top": mon["top"] + offset_t,
-        "left": mon["left"] + offset_l,
+        "left": mon["left"] + x,
+        "top": mon["top"] + y,
         "width": width,
         "height": height,
         "mon": mon_id,
