@@ -11,8 +11,9 @@ import math
 import qrcode.util
 import qrcode
 from PIL import Image, ImageTk
+import numpy as np
 import tkinter as tk
-from util import timer, png_to_video
+from util import *
 
 
 def get_parser():
@@ -31,9 +32,10 @@ def get_parser():
         "-o", "--output-dir", default="./out", help="dir/video: output image/video directory"
     )
     parser.add_argument(
-        "-r", "--region", default="80:80:-0:-0",
+        "-r", "--region", default="",
         help="screen: display region, width:height:offset_left:offset_top. "
-            "widht/height 'd' means default 3/4 screen size. Offset startwith '-' means from right/bottom, 'c' means center"
+            "widht/height: int|d|w|h, 'd' means default 3/4*min(w,h). "
+            "Offset startwith '-' means from right/bottom, 'c' means center"
     )
     parser.add_argument(
         "-n", "--nproc", type=int, default=-1, help="multiprocess encoding"
@@ -72,15 +74,12 @@ class File2Image:
         qr.make(fit=True)
 
         img = qr.make_image(fill_color="black", back_color="white")
-        # 将图像保存为字节流
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
+        return np.array(img)
 
     def process_chunk(self, i, chunk_data, result_queue):
-        img_bytes = self.encode_qrcode(chunk_data)
+        img = self.encode_qrcode(chunk_data)
         # print(f'pid {os.getpid()}: chunk {i}')
-        result_queue.put(img_bytes)
+        result_queue.put(img)
     
     def get_chunk_size(self):
         qr_maxbytes = qrcode.util.BIT_LIMIT_TABLE[self.correction][self.qr_version]//8
@@ -120,10 +119,9 @@ class File2Image:
         os.makedirs(output_dir, exist_ok=True)
         
         for i in tqdm.tqdm(range(self.num_chunks)):
-            img_bytes = result_queue.get()
-
-            with open(f"{output_dir}/img_{i}.png", "wb") as f:
-                f.write(img_bytes)
+            image_ndarry = result_queue.get()
+            img = Image.fromarray(image_ndarry)
+            img.save(f"{output_dir}/img_{i}.png")
         print(f"Output {self.num_chunks} images to {output_dir}.")
 
     def output_video(self, result_queue, output_dir, fps=10):
@@ -134,34 +132,14 @@ class File2Image:
         print(f"Output to {video_path}.")
 
     def output_screen(self, result_queue, fps=1, region=''):
-        region_split = region.split(':')
         root = tk.Tk()
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        
-        width = height = min(screen_width, screen_height) * 3 // 4
-        if len(region_split) >= 2 and region_split[0] and region_split[1]:
-            if region_split[0] != 'd':  # default
-                width = int(region_split[0])
-                height = int(region_split[1])
-        
-        o1 = o2 = 'c'
-        if len(region_split) >= 2 and region_split[2] and region_split[3]:
-            o1 = region_split[2]
-            o2 = region_split[3]
-        def get_offset(o, screen_size, window_size):
-            if o.startswith('-'):
-                return screen_size - window_size + int(o)
-            elif o=='c':
-                return (screen_size - window_size) // 2
-            else:
-                return int(o)
-            
+        width, height, x, y = parse_region(region.split(':'), root.winfo_screenwidth(), root.winfo_screenheight())
         root.overrideredirect(True) # no window border (also no close button)
-        root.geometry(f'{width}x{height}+{get_offset(o1, screen_width, width)}+{get_offset(o2, screen_height, height)}')
+        root.geometry(f'{width}x{height}+{x}+{y}')
         root.attributes('-topmost', True)
         label = tk.Label(root, borderwidth=0)   # no inner padding
         label.pack(expand=True, fill=tk.BOTH)
+        print(f"Display in window {width}x{height}+{x}+{y} fps {fps}")
         
         def quit_app(event):
             if event and event.char in ['q', 'Q', ' '] or\
@@ -177,8 +155,8 @@ class File2Image:
         img_tk_list = []
         tim = timer()
         for i in tqdm.tqdm(range(self.num_chunks)):
-            img_bytes = result_queue.get()
-            img = Image.open(io.BytesIO(img_bytes))
+            image_ndarry = result_queue.get()
+            img = Image.fromarray(image_ndarry)
             
             # resize image, otherwise label window will be too big
             img_resized = img.resize((width, height), Image.LANCZOS)

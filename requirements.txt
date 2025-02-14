@@ -4,3 +4,4 @@ tqdm
 Pillow
 mss
 pywin32
+dxcam

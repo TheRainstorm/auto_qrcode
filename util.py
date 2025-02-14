@@ -5,14 +5,14 @@ from PIL import Image
 
 class timer():
     def __init__(self):
-        self.t0 = time.time()
+        self.t0 = time.perf_counter()
         self.t0_init = self.t0
     
     def elapsed(self):
-        return time.time() - self.t0
+        return time.perf_counter() - self.t0
     
     def reset(self):
-        t1 = time.time()
+        t1 = time.perf_counter()
         elapsed = t1 - self.t0
         self.t0 = t1
         return elapsed
@@ -39,25 +39,25 @@ def png_to_video(image_dir, output_path, fps=24):
     except FileNotFoundError:
         print("错误：FFmpeg 未找到。请确保已安装 FFmpeg 并将其添加到系统路径。")
     
-# decoder
-import mss
-def setup_mss(region):
-    sct = mss.mss()
-    region_split = region.split(':')
+def parse_region_mon(region_split):
     mon_id = 1
     if len(region_split) >= 1 and region_split[0]:
         mon_id = int(region_split[0])
-    mon = sct.monitors[mon_id]
+    return mon_id
 
-    width, height = mon["width"], mon["height"]
-    if len(region_split) >= 3 and region_split[1] and region_split[2]:
-        width = int(region_split[1])
-        height = int(region_split[2])
+def parse_region(region_split, mon_width, mon_height):
+    def get_size(v):
+        value_map = { 'd': min(mon_width, mon_height)*3//4, 'w': mon_width, 'h': mon_height }
+        return value_map[v] if v in value_map else int(v)
+    
+    width = height = 'd'
+    if len(region_split) >= 2 and region_split[0] and region_split[1]:
+        width, height = region_split[0], region_split[1]
+    width, height = get_size(width), get_size(height)
     
     o1 = o2 = 'c'
-    if len(region_split) >= 5 and region_split[3] and region_split[4]:
-        o1 = region_split[3]
-        o2 = region_split[4]
+    if len(region_split) >= 4 and region_split[2] and region_split[3]:
+        o1, o2 = region_split[2], region_split[3]
 
     def get_offset(o, screen_size, window_size):
         if o.startswith('-'):
@@ -66,19 +66,10 @@ def setup_mss(region):
             return (screen_size - window_size) // 2
         else:
             return int(o)
-    x = get_offset(o1, mon["width"], width)
-    y = get_offset(o2, mon["height"], height)
-    # The screen part to capture
-    monitor = {
-        "left": mon["left"] + x,
-        "top": mon["top"] + y,
-        "width": width,
-        "height": height,
-        "mon": mon_id,
-    }
-    print(f"Capture region: {monitor}")
-    return sct, monitor
-    
+    x, y = get_offset(o1, mon_width, width), get_offset(o2, mon_height, height)
+    return width, height, x, y
+
+# decoder
 # https://stackoverflow.com/a/79254174/9933066
 import ctypes, win32con, win32gui
 from ctypes import windll, wintypes

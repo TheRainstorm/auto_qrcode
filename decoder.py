@@ -6,7 +6,7 @@ from pyzbar.pyzbar import decode
 from PIL import Image
 import multiprocessing
 import tqdm
-from util import setup_mss, timer, get_hwnd, getSnapshot
+from util import *
 
 def get_parser():
     parser = argparse.ArgumentParser(
@@ -16,13 +16,16 @@ def get_parser():
     # 三个参数对应三种模式
     parser.add_argument(
         "-m", "--mode",
-        default="screen_win32", choices=['dir', 'screen_mss', 'screen_win32'],
+        default="screen_win32", choices=['dir', 'screen_mss', 'screen_dxcam', 'screen_win32'],
         help="input from dir or screen snapshot."
     )
     parser.add_argument("-i", "--input-dir", default='./out', help="dir: The dir containing the images to decode, use this for testing.")
-    parser.add_argument("-r", "--region",
-                        help="Screen_mss: screen region to capture, format: mon_id:width:height:offset_left:offset_top. "
-                        "mon_id is the monitor id, default 1. Offset startwith '-' means from right/bottom, 'c' means center")
+    parser.add_argument(
+        "-r", "--region", default="",
+        help="Screen_mss: screen region to capture, format: mon_id:width:height:offset_left:offset_top. "
+            "mon_id is the monitor id, default 1. "
+            "widht/height: int|d|w|h, 'd' means default 3/4*min(w,h). "
+            "Offset startwith '-' means from right/bottom, 'c' means center")
     parser.add_argument("-w", "--win-title", help="screen_win32: title of window to capture")
     parser.add_argument("-n", "--nproc", type=int, default=-1, help="multiprocess")
     return parser
@@ -62,6 +65,8 @@ class Image2File:
         
         if mode=='screen_mss':
             self.input_from_screen(capture_method='mss', region=region)
+        elif mode=='screen_dxcam':
+            self.input_from_screen(capture_method='dxcam', region=region)
         elif mode=='screen_win32':
             if not win_title:
                 print("win_title must be specified when use screen_win32 mode.")
@@ -104,25 +109,54 @@ class Image2File:
 
     def input_from_screen(self, capture_method, region='', win_title=''):
         if capture_method == 'mss':
-            sct, monitor = setup_mss(region)
+            import mss
+            region_split = region.split(':')
+            sct = mss.mss()
+            mon_id = parse_region_mon(region_split)
+            mon = sct.monitors[mon_id]
+            width, height, x, y = parse_region(region_split[1:], mon["width"], mon["height"])
+            
+            # The screen part to capture
+            monitor = {
+                "left": mon["left"] + x,
+                "top": mon["top"] + y,
+                "width": width,
+                "height": height,
+                "mon": mon_id,
+            }
+            print(f"Screen: {mon_id}, Capture region: {width}x{height}+{x}+{y}")
+            
             def capture_img():
                 sct_img = sct.grab(monitor)
                 return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+        elif capture_method == 'dxcam':
+            import dxcam
+            region_split = region.split(':')
+            mon_id = parse_region_mon(region_split) - 1 # 0 based
+            camera = dxcam.create(output_idx=mon_id, output_color="RGB")
+            width, height, x, y = parse_region(region_split[1:], camera.width, camera.height)
+            region = (x, y, x + width, y + height)
+            print(f"Screen: {mon_id+1}, Capture region: {width}x{height}+{x}+{y}")
+            
+            camera.start(target_fps=60, video_mode=True, region=region)
+            def capture_img():
+                frame = camera.get_latest_frame()
+                # frame = camera.grab()
+                return Image.fromarray(frame)
         else:
             hwnd = get_hwnd(win_title)
             def capture_img():
                 return getSnapshot(hwnd)
         
+        img = capture_img()
+        img.save("first.png") # write the first image to disk
+        
         num_chunks = remained = -1     # 总图片数
         collected = set()   # 记录已经解码的图片
-        tim = timer()
-        i = 0
         decoded_bytes = 0
+        tim = timer()
         while remained != 0:
-            i += 1
             img = capture_img()
-            if i==1: img.save("first.png") # write the first image to disk
-            
             elap = tim.reset()
             print(f"Progress: {len(collected)}/{num_chunks}, avg speed: {decoded_bytes/tim.since_init():.2f} B/s, one iter: {elap:.2f} s, speed: {1/elap if elap else 0:.3f} iter/s \r", end='')
             
@@ -138,6 +172,8 @@ class Image2File:
                 data_list[idx] = data
                 decoded_bytes += len(data)
                 remained -= 1
+        if camera in locals():
+            camera.stop()
         self.data_merged = b"".join([d for d in data_list])
 
 if __name__ == "__main__":
