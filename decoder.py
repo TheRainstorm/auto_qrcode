@@ -6,28 +6,31 @@ from pyzbar.pyzbar import decode
 from PIL import Image
 import multiprocessing
 import tqdm
-from util import timer
+from util import setup_mss, timer, get_hwnd, getSnapshot
 
 def get_parser():
     parser = argparse.ArgumentParser(
         description="Convert a file to a series of QR codes.")
-    parser.add_argument("-m", "--mode", default="screen",
-                        help="input from screen/dir(only for test)")
-    parser.add_argument("-i", "--input-dir", help="The dir containing the images to decode(for test).")
     parser.add_argument("-o", "--output",
                         default="decoded.bin", help="output file path.")
+    # 三个参数对应三种模式
+    parser.add_argument(
+        "-m", "--mode",
+        default="screen_win32", choices=['dir', 'screen_mss', 'screen_win32'],
+        help="input from dir or screen snapshot."
+    )
+    parser.add_argument("-i", "--input-dir", default='./out', help="dir: The dir containing the images to decode, use this for testing.")
+    parser.add_argument("-r", "--region", default='2:1000:1000', help="screen_mss: screen region to capture, format: mon_id:width:height:offset_top:offset_left")
+    parser.add_argument("-w", "--win-title", help="screen_win32: title of window to capture")
     parser.add_argument("-n", "--nproc", type=int, default=-1, help="multiprocess")
-    parser.add_argument("-r", "--region", default="",
-                        help="region to capture, format: mon_id:width:height:offset_top:offset_left")
     return parser
 
 class Image2File:
-    def __init__(self, nproc=1, region=''):
+    def __init__(self, nproc=1):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
             self.nproc = nproc
-        self.region = region
 
     def decode_qrcode(self, img):
         decoded = decode(img)
@@ -36,18 +39,42 @@ class Image2File:
         data_ = decoded[0].data
         return base64.b32decode(data_)
     
+    def parse_img(self, img):
+        raw_data = self.decode_qrcode(img)
+        if raw_data is None:
+            return -1, -1, b''
+        idx, num_chunks = struct.unpack('HH', raw_data[:4])
+        data = raw_data[4:]
+        return idx, num_chunks, data
+    
     def process_image(self, file_path, result_queue):
         # read image
         img = Image.open(file_path)
         
-        raw_data = self.decode_qrcode(img)
-        
-        # parse header
-        idx = struct.unpack('i', raw_data[:4])[0]
-        data = raw_data[4:]
+        idx, _, data = self.parse_img(img)
         result_queue.put((idx, data))
         # print(f'pid {os.getpid()}: file {file_path} image {idx}')
     
+    def convert(self, output_file, mode='screen_win32', input_dir="", region='', win_title=''):
+        tim = timer()
+        
+        if mode=='screen_mss':
+            self.input_from_screen(capture_method='mss', region=region)
+        elif mode=='screen_win32':
+            if not win_title:
+                print("win_title must be specified when use screen_win32 mode.")
+                exit(1)
+            self.input_from_screen(capture_method='win32', win_title=win_title)
+        elif mode=='dir':
+            self.input_from_dir(input_dir)
+        else:
+            raise ValueError("No input source specified.")
+            
+        with open(output_file, 'wb') as f:
+            f.write(self.data_merged)
+        elap = tim.elapsed()
+        print(f"output to {output_file} size {len(self.data_merged)} bytes speed {len(self.data_merged)/elap:.2f} B/s.")
+
     def input_from_dir(self, input_dir):
         file_list = []
         for file in os.listdir(input_dir):
@@ -72,81 +99,53 @@ class Image2File:
             data_list[idx] = data
         # concat
         self.data_merged = b"".join([d for d in data_list])
-        
-    def input_from_screen(self):
-        import mss
-        sct = mss.mss()
-        region_split = self.region.split(':')
-        mon_id = 1
-        if len(region_split) >= 1 and region_split[0]:
-            mon_id = int(region_split[0])
-        mon = sct.monitors[mon_id]
 
-        width, height = mon["width"], mon["height"]
-        if len(region_split) >= 3 and region_split[1] and region_split[2]:
-            width = int(region_split[1])
-            height = int(region_split[2])
+    def input_from_screen(self, capture_method, region='', win_title=''):
+        if capture_method == 'mss':
+            sct, monitor = setup_mss(region)
+            def capture_img():
+                sct_img = sct.grab(monitor)
+                return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+        else:
+            hwnd = get_hwnd(win_title)
+            def capture_img():
+                return getSnapshot(hwnd)
         
-        offset_t = offset_l = 0
-        if len(region_split) >= 5 and region_split[3] and region_split[4]:
-            offset_t = int(region_split[3])
-            offset_l = int(region_split[4])
-        
-        # The screen part to capture
-        monitor = {
-            "top": mon["top"] + offset_t,
-            "left": mon["left"] + offset_l,
-            "width": width,
-            "height": height,
-            "mon": mon_id,
-        }
-        print(f"Capture region: {monitor}")
-        
-        num_chunks = -1
-        not_visited = -1
-        collected = set()
-        i = 0
+        num_chunks = remained = -1     # 总图片数
+        collected = set()   # 记录已经解码的图片
         tim = timer()
-        while not_visited != 0:
+        i = 0
+        decoded_bytes = 0
+        while remained != 0:
             i += 1
+            img = capture_img()
+            if i==1: img.save("first.png") # write the first image to disk
+            
             elap = tim.reset()
-            print(f"Progress: {len(collected)}/{num_chunks}, one iter: {elap:.2f}s speed: {1/elap if elap else 0:.3f} iter/s \r", end='')
-            sct_img = sct.grab(monitor)
-            img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-            if i==1:
-                # write the first image to disk
-                img.save("first.png")
-            raw_data = self.decode_qrcode(img)
-            if raw_data is None:
+            print(f"Progress: {len(collected)}/{num_chunks}, avg speed: {decoded_bytes/tim.since_init():.2f} B/s, one iter: {elap:.2f} s, speed: {1/elap if elap else 0:.3f} iter/s \r", end='')
+            
+            idx, num_chunks, data = self.parse_img(img)
+            if idx == -1:  # parse empty
                 continue
-            idx, num_chunks = struct.unpack('HH', raw_data[:4])
-            if not_visited == -1:
-                not_visited = num_chunks
+            
+            if remained == -1:
+                remained = num_chunks
                 data_list = [b'' for _ in range(num_chunks)]
             if idx not in collected:
                 collected.add(idx)
-                data_list[idx] = raw_data[4:]
-                not_visited -= 1
+                data_list[idx] = data
+                decoded_bytes += len(data)
+                remained -= 1
                 # progress
                 print(f"Decoded {idx} ")
         self.data_merged = b"".join([d for d in data_list])
-        
-    def convert(self, output_file, input_dir="", input_mode="screen"):
-        tim = timer()
-        if input_mode == "screen":
-            self.input_from_screen()
-        elif input_mode == "dir":
-            self.input_from_dir(input_dir)
-        else:
-            raise ValueError(f"Invalid input mode: {input_mode}")
-        
-        with open(output_file, 'wb') as f:
-            f.write(self.data_merged)
-        elap = tim.elapsed()
-        print(f"output to {output_file} size {len(self.data_merged)} bytes speed {len(self.data_merged)/elap:.2f} B/s.")
 
 if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
-    i2f = Image2File(args.nproc, args.region)
-    i2f.convert(args.output, input_mode=args.mode, input_dir=args.input_dir)
+    args.win_title = os.getenv('CAPTURE_WINDOW', args.win_title)
+    i2f = Image2File(args.nproc)
+    i2f.convert(args.output, input_dir=args.input_dir,
+                mode=args.mode,
+                region=args.region,
+                win_title=args.win_title)

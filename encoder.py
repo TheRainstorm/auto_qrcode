@@ -12,29 +12,15 @@ import qrcode.util
 import qrcode
 from PIL import Image, ImageTk
 import tkinter as tk
-from util import timer
+from util import timer, png_to_video
 
-def png_to_video(image_dir, output_path, fps=24):
-    command = [
-        "ffmpeg",
-        "-framerate", str(fps),
-        "-i", os.path.join(image_dir, "img_%d.png"),  # 使用通配符匹配所有 PNG 文件
-        "-c:v", "libx264",  # 使用 h264 编码
-        "-pix_fmt", "yuv420p",  # 设置像素格式，避免兼容性问题
-        output_path
-    ]
-
-    try:
-        subprocess.run(command, check=True)
-        print(f"视频已成功创建：{output_path}")
-    except subprocess.CalledProcessError as e:
-        print(f"创建视频时出错：{e}")
-    except FileNotFoundError:
-        print("错误：FFmpeg 未找到。请确保已安装 FFmpeg 并将其添加到系统路径。")
 
 def get_parser():
     parser = argparse.ArgumentParser(
         description="Convert a file to a series of QR codes."
+    )
+    parser.add_argument(
+        "-i", "--input", required=True, help="The path to the file to convert."
     )
     parser.add_argument(
         "-m", "--mode",
@@ -42,10 +28,10 @@ def get_parser():
         help="output to dir/video/screen(display in window)"
     )
     parser.add_argument(
-        "-i", "--input", required=True, help="The path to the file to convert."
+        "-o", "--output-dir", default="./out", help="dir/video: output image/video directory"
     )
     parser.add_argument(
-        "-o", "--output-dir", default="./out", help="Image output directory."
+        "-r", "--region", default="1000:1000", help="screen: display region, width:height:offset_top:offset_left"
     )
     parser.add_argument(
         "-n", "--nproc", type=int, default=-1, help="multiprocess encoding"
@@ -53,10 +39,10 @@ def get_parser():
     parser.add_argument(
         "-Q", "--qr-version", type=int, default=40, help="QRcode version"
     )
-    # screen
     parser.add_argument(
-        "-F", "--fps", type=int, default=10, help="display image fps"
+        "-F", "--fps", type=int, default=10, help="output screen display image fps"
     )
+    
     return parser
 
 class File2Image:
@@ -66,6 +52,7 @@ class File2Image:
         else:
             self.nproc = nproc
         self.qr_version = qr_version
+        self.correction = qrcode.constants.ERROR_CORRECT_L
 
     def encode_qrcode(self, data_):
         # qrcode 实际编码二进制数据时，实际对数据有要求，需要满足ISO/IEC 8859-1
@@ -74,7 +61,7 @@ class File2Image:
         data = base64.b32encode(data_)
         qr = qrcode.QRCode(
             version=self.qr_version,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            error_correction=self.correction,
             box_size=10,
             border=4,
         )
@@ -93,12 +80,12 @@ class File2Image:
         result_queue.put(img_bytes)
     
     def get_chunk_size(self):
-        qr_maxbytes = qrcode.util.BIT_LIMIT_TABLE[qrcode.constants.ERROR_CORRECT_L][self.qr_version]//8
+        qr_maxbytes = qrcode.util.BIT_LIMIT_TABLE[self.correction][self.qr_version]//8
         base32_valid = int(qr_maxbytes/1.0625/1.1)  # 理论计算结果超出限制，除以 1.1 简单修正一下
         print(f"QR code version {self.qr_version} corr: L max bytes: {qr_maxbytes} base32_valid: {base32_valid}")
         return base32_valid - 4  # 4 bytes for header
 
-    def convert(self, file_path, output_mode='screen', output_dir="", fps=10):
+    def convert(self, file_path, output_mode='screen', output_dir="", fps=10, region=''):
         with open(file_path, "rb") as f:
             file_data = f.read()
         print(f"File size: {len(file_data)} bytes.")
@@ -122,7 +109,7 @@ class File2Image:
         elif output_mode == 'video':
             self.output_video(result_queue, output_dir, fps=fps)
         elif output_mode == 'screen':
-            self.output_screen(result_queue, fps=fps)
+            self.output_screen(result_queue, fps=fps, region=region)
         else:
             raise ValueError(f"Invalid output mode: {output_mode}")
 
@@ -143,12 +130,21 @@ class File2Image:
         png_to_video(output_dir, video_path, fps=fps)
         print(f"Output to {video_path}.")
 
-    def output_screen(self, result_queue, fps=1):
-        target_width, target_height = 1000, 1000
+    def output_screen(self, result_queue, fps=1, region=''):
+        region_split = region.split(':')
+        width, height = 1000, 1000
+        if len(region_split) >= 2 and region_split[0] and region_split[1]:
+            width = int(region_split[0])
+            height = int(region_split[1])
+        
+        offset_t = offset_l = 0
+        if len(region_split) >= 4 and region_split[2] and region_split[3]:
+            offset_t = int(region_split[2])
+            offset_l = int(region_split[3])
         
         root = tk.Tk()
         root.overrideredirect(True) # no window border (also no close button)
-        root.geometry(f'{target_width}x{target_height}+0+0')
+        root.geometry(f'{width}x{height}+{offset_t}+{offset_l}')
         label = tk.Label(root, borderwidth=0)   # no inner padding
         label.pack(expand=True, fill=tk.BOTH)
         
@@ -169,7 +165,7 @@ class File2Image:
             img = Image.open(io.BytesIO(img_bytes))
             
             # resize image, otherwise label window will be too big
-            img_resized = img.resize((target_width, target_height), Image.LANCZOS)
+            img_resized = img.resize((width, height), Image.LANCZOS)
         
             img_tk = ImageTk.PhotoImage(img_resized)
             img_tk_list.append(img_tk)
@@ -192,4 +188,5 @@ if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
     f2i = File2Image(args.nproc, args.qr_version)
-    f2i.convert(args.input, output_mode=args.mode, output_dir=args.output_dir, fps=args.fps)
+    f2i.convert(args.input, output_mode=args.mode,
+                output_dir=args.output_dir, region=args.region, fps=args.fps)
