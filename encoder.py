@@ -15,7 +15,7 @@ import numpy as np
 import tkinter as tk
 from pixelbar import PixelBar
 from util import *
-
+from pywirehair import encoder as wirehair_encoder
 
 def get_parser():
     parser = argparse.ArgumentParser(
@@ -38,17 +38,23 @@ def get_parser():
             "widht/height: int|d|w|h|f, 'd' means default 3/4*min(w,h). f: QR code fit pixel. "
             "Offset startwith '-' means from right/bottom, 'c' means center"
     )
+    # L2
     parser.add_argument(
         "-M", "--method", default="qrcode", choices=['qrcode', 'pixelbar'], help="encoding method"
-    )
-    parser.add_argument(
-        "-n", "--nproc", type=int, default=-1, help="multiprocess encoding"
     )
     parser.add_argument(
         "-Q", "--qr-version", type=int, default=40, help="QRcode version"
     )
     parser.add_argument(
         "-f", "--qr-fit-factor", type=float, default=1.5, help="QRcode fit pixel=(25+4*version+2(border))*fit_factor"
+    )
+    # L3
+    parser.add_argument(
+        "--not-use-fountain-code", dest='use_fountain_code', action='store_false', help="l3 encoding method"
+    )
+    # misc
+    parser.add_argument(
+        "-n", "--nproc", type=int, default=-1, help="multiprocess encoding"
     )
     parser.add_argument(
         "-F", "--fps", type=int, default=10, help="output screen display image fps"
@@ -72,6 +78,7 @@ class File2Image:
         self.correction = qrcode.constants.ERROR_CORRECT_L
         self.qr_fit_factor = qr_fit_factor
         self.pb = PixelBar(self.qr_version, box_size=self.qr_boxsize, border_size=self.qr_border, pixel_bits=8)
+        self.use_fountain_code = True   # 不断产生新的编码块，直到解码成功
         
     def encode_qrcode(self, data_):
         # qrcode 实际编码二进制数据时，实际对数据有要求，需要满足ISO/IEC 8859-1
@@ -93,51 +100,96 @@ class File2Image:
     def encode_pixelbar(self, data):
         return self.pb.encode(data)
 
-    def process_chunk(self, i, chunk_data, result_queue):
-        if self.method == 'qrcode':
-            img = self.encode_qrcode(chunk_data)
-        else:
-            img = self.encode_pixelbar(chunk_data)
-        # print(f'pid {os.getpid()}: chunk {i}')
-        result_queue.put(np.array(img))
-    
-    def get_chunk_size(self):
+    def get_l2_pl_size(self):
         if self.method == 'qrcode':
             qr_maxbytes = qrcode.util.BIT_LIMIT_TABLE[self.correction][self.qr_version]//8
             base32_valid = int(qr_maxbytes/1.0625/1.1)  # 理论计算结果超出限制，除以 1.1 简单修正一下
             print(f"QR code version {self.qr_version} corr: L max bytes: {qr_maxbytes} base32_valid: {base32_valid}")
-            return base32_valid - 8  # 8 bytes for header
+            return base32_valid
         else:
-            return self.pb.max_data_size - 8
+            return self.pb.max_data_size
+        
+    def mk_l2_pkt(self, l3_pkt):
+        if self.method == 'qrcode':
+            img = self.encode_qrcode(l3_pkt)
+        else:
+            img = self.encode_pixelbar(l3_pkt)
+        return np.array(img)
 
+    def get_l3_pl_size(self, l2_pl_size):
+        # if self.use_fountain_code:
+        return l2_pl_size - 8
+    
+    def mk_l3_pkt(self, idx, num_chunks, data):
+        header = struct.pack("II", idx, num_chunks)
+        return header + data
+    def mk_l3_pkt_fountain_code(self, idx, file_data_size, data):
+        header = struct.pack("II", idx, file_data_size)
+        return header + data
+        
+    def output_l2_pkt_to_queue(self, i, l3_pkt, result_queue):
+        # print(f'pid {os.getpid()}: chunk {i}')
+        result_queue.put(self.mk_l2_pkt(l3_pkt))
+    
+    def output_l2_pkt_to_queue_fountain_code(self, pid, file_data, l3_pl_size, result_queue):
+        enc = wirehair_encoder(file_data, l3_pl_size)
+        i = 0
+        while True:
+            while result_queue.qsize() > 60:
+                time.sleep(0.1)
+            
+            l3_pl = enc.encode(i)
+            l3_pkt = self.mk_l3_pkt_fountain_code(i, len(file_data), l3_pl)
+            i += 1
+            result_queue.put(self.mk_l2_pkt(l3_pkt))
+    
     def convert(self, file_path, output_mode='screen', output_dir="", fps=10, region=''):
         with open(file_path, "rb") as f:
             file_data = f.read()
         print(f"File size: {len(file_data)} bytes.")
 
-        chunk_size = self.get_chunk_size()
-        self.num_chunks = math.ceil(len(file_data) / chunk_size)
-        print(f"Chunk size: {chunk_size} bytes, num_chunks: {self.num_chunks}")
+        l2_pl_size = self.get_l2_pl_size()
+        print(f"L2 payload size: {l2_pl_size} bytes.")
+        l3_pl_size = self.get_l3_pl_size(l2_pl_size)
+        print(f"L3 payload size: {l3_pl_size} bytes.")
+        
+        self.num_chunks = math.ceil(len(file_data) / l3_pl_size)
+        print(f"num_chunks(l3_pkt_num): {self.num_chunks}")
         
         manager = multiprocessing.Manager()
         result_queue = manager.Queue()
-        pool = multiprocessing.Pool(processes=self.nproc)
 
-        # multiprocessing encoding
-        for i in range(self.num_chunks):
-            header = struct.pack("II", i, self.num_chunks)
-            chunk_data = header + file_data[i * chunk_size : (i + 1) * chunk_size]
-            pool.apply_async(self.process_chunk, (i, chunk_data, result_queue))
-        pool.close()
-
-        if output_mode == 'dir':
-            self.output_file(result_queue, output_dir)
-        elif output_mode == 'video':
-            self.output_video(result_queue, output_dir, fps=fps)
-        elif output_mode == 'screen':
-            self.output_screen(result_queue, fps=fps, region=region)
+        # 采用生产者和消费者模型，生产者输出 l2_pkt 到队列
+        # 主进程输出 l2_pkt 到文件/视频/屏幕
+        if self.use_fountain_code:
+            producers = []
+            # use one process now, TODO: use multiple processes encoding
+            process = multiprocessing.Process(target=self.output_l2_pkt_to_queue_fountain_code, args=(0, file_data, l3_pl_size, result_queue))
+            process.start()
+            producers.append(process)
         else:
-            raise ValueError(f"Invalid output mode: {output_mode}")
+            pool = multiprocessing.Pool(processes=self.nproc)
+            # multiprocessing encoding
+            for i in range(self.num_chunks):
+                l3_pkt = self.mk_l3_pkt(i, self.num_chunks, file_data[i * l3_pl_size : (i + 1) * l3_pl_size])
+                pool.apply_async(self.output_l2_pkt_to_queue, (i, l3_pkt, result_queue))
+            pool.close()
+
+        try:
+            if output_mode == 'dir':
+                self.output_file(result_queue, output_dir)
+            elif output_mode == 'video':
+                self.output_video(result_queue, output_dir, fps=fps)
+            elif output_mode == 'screen':
+                self.output_screen(result_queue, fps=fps, region=region)
+            else:
+                raise ValueError(f"Invalid output mode: {output_mode}")
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt")
+        finally:
+            if self.use_fountain_code:
+                for p in producers:
+                    p.terminate()  # 确保所有子进程被正确终止
 
     def output_file(self, result_queue, output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -176,36 +228,55 @@ class File2Image:
             label.configure(image=img)
             label.update()
         
-        img_tk_list = []
-        tim = timer()
-        for i in tqdm.tqdm(range(self.num_chunks)):
-            tim.reset()
-            image_ndarry = result_queue.get()
-            img = Image.fromarray(image_ndarry)
+        if self.use_fountain_code:
+            tim = timer()
+            i = 0
+            while True:
+                tim.reset()
+                image_ndarry = result_queue.get()
+                img = Image.fromarray(image_ndarry)
+                
+                # resize image, otherwise label window will be too big
+                img_resized = img.resize((width, height), Image.NEAREST)
+
+                print(f"current idx: {i}/{self.num_chunks}\r", end='')
+                img_tk = ImageTk.PhotoImage(img_resized)
+                e = tim.elapsed()
+                if e < 1 / fps:
+                    time.sleep(1 / fps - e)
+                update_image(label, img_tk)
+                i += 1
+        else:
+            img_tk_list = []
+            tim = timer()
+            for i in tqdm.tqdm(range(self.num_chunks)):
+                tim.reset()
+                image_ndarry = result_queue.get()
+                img = Image.fromarray(image_ndarry)
+                
+                # resize image, otherwise label window will be too big
+                img_resized = img.resize((width, height), Image.NEAREST)
             
-            # resize image, otherwise label window will be too big
-            img_resized = img.resize((width, height), Image.NEAREST)
-        
-            img_tk = ImageTk.PhotoImage(img_resized)
-            img_tk_list.append(img_tk)
-            e = tim.elapsed()
-            if e < 1 / fps:
-                time.sleep(1 / fps - e)
-            update_image(label, img_tk)
-        
-        def update_image_timer(label, img_tk_list, index=0):
-            print(f"current idx: {index}\r", end='')
-            label.configure(image=img_tk_list[index])
-            label.img = img_tk_list[index]
-            next_index = (index + 1) % len(img_tk_list)
-            root.after(int(1000 / fps), update_image_timer, label, img_tk_list, next_index)
-        
-        # display repeatly
-        update_image_timer(label, img_tk_list)
-        try:
-            root.mainloop()
-        except KeyboardInterrupt:
-            root.destroy()
+                img_tk = ImageTk.PhotoImage(img_resized)
+                if self.use_fountain_code: img_tk_list.append(img_tk)
+                e = tim.elapsed()
+                if e < 1 / fps:
+                    time.sleep(1 / fps - e)
+                update_image(label, img_tk)
+            
+            def update_image_timer(label, img_tk_list, index=0):
+                print(f"current idx: {index}\r", end='')
+                label.configure(image=img_tk_list[index])
+                label.img = img_tk_list[index]
+                next_index = (index + 1) % len(img_tk_list)
+                root.after(int(1000 / fps), update_image_timer, label, img_tk_list, next_index)
+            
+            # display repeatly
+            update_image_timer(label, img_tk_list)
+            try:
+                root.mainloop()
+            except KeyboardInterrupt:
+                root.destroy()
     
 if __name__ == "__main__":
     parser = get_parser()
