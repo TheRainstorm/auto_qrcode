@@ -8,15 +8,13 @@ import multiprocessing
 import tqdm
 from pixelbar import PixelBar
 from util import *
+from pywirehair import decoder as wirehair_decoder
 
 def get_parser():
     parser = argparse.ArgumentParser(
         description="Convert a file to a series of QR codes.")
     parser.add_argument("-o", "--output",
                         default="decoded.txt", help="output file path.")
-    parser.add_argument(
-        "-M", "--method", default="qrcode", choices=['qrcode', 'pixelbar'], help="encoding method"
-    )
     # 三个参数对应三种模式
     parser.add_argument(
         "-m", "--mode",
@@ -31,14 +29,23 @@ def get_parser():
             "widht/height: int|d|w|h, 'd' means default 3/4*min(w,h). "
             "Offset startwith '-' means from right/bottom, 'c' means center")
     parser.add_argument("-w", "--win-title", help="screen_win32: title of window to capture")
-    parser.add_argument("-n", "--nproc", type=int, default=-1, help="multiprocess")
+    # L2
+    parser.add_argument(
+        "-M", "--method", default="qrcode", choices=['qrcode', 'pixelbar'], help="encoding method"
+    )
+    # pixelbar 还不支持自动识别 boxsize，所以需要手动指定
     parser.add_argument(
         "-B", "--qr-box-size", type=int, default=20, help="QRcode box size"
     )
+    # L3
+    parser.add_argument(
+        "--not-use-fountain-code", dest='use_fountain_code', action='store_false', help="l3 encoding method"
+    )
+    parser.add_argument("-n", "--nproc", type=int, default=-1, help="multiprocess")
     return parser
 
 class Image2File:
-    def __init__(self, method='qrcode', nproc=1, qr_box_size=None):
+    def __init__(self, method='qrcode', nproc=1, qr_box_size=None, use_fountain_code=True):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
@@ -47,6 +54,8 @@ class Image2File:
         self.pb = PixelBar()
         # self.pb = PixelBar(self.qr_version, box_size=self.qr_boxsize, border_size=self.qr_border, pixel_bits=8)
         self.qr_box_size = qr_box_size
+        self.use_fountain_code = use_fountain_code
+        self.dec = None
 
     def decode_qrcode(self, img):
         decoded = decode(img)
@@ -55,13 +64,32 @@ class Image2File:
         data_ = decoded[0].data
         return base64.b32decode(data_)
     
-    def parse_img(self, img):
+    def get_l3_pkt_from_l2(self, img):
+        '''l2_pkt ->l3_pkt'''
         if self.method == 'qrcode':
             raw_data = self.decode_qrcode(img)
         elif self.method == 'pixelbar':
             raw_data = self.pb.decode(img, box_size=self.qr_box_size)
         else:
             raise ValueError("No encoding method specified.")
+        return raw_data
+    
+    def parse_l3_pkt(self, l3_pkt):
+        idx, num_chunks = struct.unpack('II', l3_pkt[:8])
+        data = l3_pkt[8:]
+        return idx, num_chunks, data
+
+    def parse_l3_pkt_fountain_code(self, l3_pkt):
+        idx, file_data_size = struct.unpack('II', l3_pkt[:8])
+        l3_pl_raw = l3_pkt[8:]
+        l3_pl_size = len(l3_pl_raw)
+        if not self.dec:
+            self.dec = wirehair_decoder(file_data_size, l3_pl_size)
+        l3_pl = self.dec.decode(idx, l3_pl_raw)
+        return idx, file_data_size, l3_pl
+        
+    def parse_img(self, img):
+        raw_data = self.get_l3_pkt_from_l2(img)
         if raw_data is None:
             return -1, -1, b''
         idx, num_chunks = struct.unpack('II', raw_data[:8])
@@ -72,7 +100,7 @@ class Image2File:
         # read image
         img = Image.open(file_path)
         
-        idx, _, data = self.parse_img(img)
+        idx, _, data = self.parse_l3_pkt(self.get_l3_pkt_from_l2(img))
         result_queue.put((idx, data))
         # print(f'pid {os.getpid()}: file {file_path} image {idx}')
     
@@ -89,6 +117,9 @@ class Image2File:
                 exit(1)
             self.input_from_screen(capture_method='win32', win_title=win_title)
         elif mode=='dir':
+            if self.use_fountain_code:
+                print("Fountain code not supported in dir mode for now.")
+                exit(1)
             self.input_from_dir(input_dir)
         else:
             raise ValueError("No input source specified.")
@@ -167,33 +198,59 @@ class Image2File:
         img = capture_img()
         img.save("first.png") # write the first image to disk
         
-        num_chunks = remained = -1     # 总图片数
-        collected = set()   # 记录已经解码的图片
-        decoded_bytes = 0
-        max_idx = -1
-        tim = timer()
-        while remained != 0:
-            img = capture_img()
-            elap = tim.reset()
-            print(f"max: {max_idx:5d}{' ' if max_idx<= len(collected) else 'M'} len/tot: {len(collected):>5d}/{num_chunks:<5d} speed: {decoded_bytes/tim.since_init():.2f} B/s each iter: {elap:.2f}s speed: {1/elap:.3f}fps \r", end='')
-            
-            idx, num_chunks, data = self.parse_img(img)
-            if idx == -1:  # parse empty
-                continue
-            
-            if remained == -1:
-                tim = timer()
-                remained = num_chunks
-                data_list = [b'' for _ in range(num_chunks)]
-            if idx not in collected:
-                collected.add(idx)
-                data_list[idx] = data
-                decoded_bytes += len(data)
-                max_idx = max(max_idx, idx)
-                remained -= 1
-        if camera in locals():
+        if self.use_fountain_code:
+            tim = timer()
+            idx = -1
+            collected_idx = set()
+            file_data_size = -1
+            l3_pl_size = -1
+            num_chunks = -1
+            while True:
+                img = capture_img()
+                elap = tim.reset()
+                print(f"idx: {idx:5d} len/tot: {len(collected_idx):>5d}/{num_chunks:<5d} speed: {len(collected_idx)*l3_pl_size/tim.since_init():.2f} B/s each iter: {elap:.2f}s speed: {1/elap:.3f}fps \r", end='')
+                l3_pkt = self.get_l3_pkt_from_l2(img)
+                if l3_pkt is None:
+                    continue
+                idx, file_data_size, l3_pl = self.parse_l3_pkt_fountain_code(l3_pkt)
+                if l3_pl_size == -1:  # 第一次接收到数据
+                    tim = timer()   # 重置时钟
+                    l3_pl_size = len(l3_pkt) - 8
+                    num_chunks = (file_data_size + l3_pl_size - 1)// l3_pl_size
+                collected_idx.add(idx)
+                if l3_pl is not None:
+                    print()
+                    break
+            self.data_merged = l3_pl
+        else:
+            num_chunks = remained = -1     # 总图片数
+            collected = set()   # 记录已经解码的图片
+            decoded_bytes = 0
+            max_idx = -1
+            tim = timer()
+            while remained != 0:
+                img = capture_img()
+                elap = tim.reset()
+                print(f"max: {max_idx:5d}{' ' if max_idx<= len(collected) else 'M'} len/tot: {len(collected):>5d}/{num_chunks:<5d} speed: {decoded_bytes/tim.since_init():.2f} B/s each iter: {elap:.2f}s speed: {1/elap:.3f}fps \r", end='')
+                
+                idx, num_chunks, data = self.parse_img(img)
+                if idx == -1:  # parse empty
+                    continue
+                
+                if remained == -1:
+                    tim = timer()
+                    remained = num_chunks
+                    data_list = [b'' for _ in range(num_chunks)]
+                if idx not in collected:
+                    collected.add(idx)
+                    data_list[idx] = data
+                    decoded_bytes += len(data)
+                    max_idx = max(max_idx, idx)
+                    remained -= 1
+            print()
+            self.data_merged = b"".join([d for d in data_list])
+        if capture_method == 'dxcam':
             camera.stop()
-        self.data_merged = b"".join([d for d in data_list])
 
 if __name__ == "__main__":
     parser = get_parser()

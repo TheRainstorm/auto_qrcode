@@ -66,7 +66,7 @@ def get_parser():
     return parser
 
 class File2Image:
-    def __init__(self, method='qrcode', nproc=1, qr_version=40, qr_fit_factor=1.5):
+    def __init__(self, method='qrcode', nproc=1, qr_version=40, qr_fit_factor=1.5, use_fountain_code=True):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
@@ -78,7 +78,7 @@ class File2Image:
         self.correction = qrcode.constants.ERROR_CORRECT_L
         self.qr_fit_factor = qr_fit_factor
         self.pb = PixelBar(self.qr_version, box_size=self.qr_boxsize, border_size=self.qr_border, pixel_bits=8)
-        self.use_fountain_code = True   # 不断产生新的编码块，直到解码成功
+        self.use_fountain_code = use_fountain_code   # 不断产生新的编码块，直到解码成功
         
     def encode_qrcode(self, data_):
         # qrcode 实际编码二进制数据时，实际对数据有要求，需要满足ISO/IEC 8859-1
@@ -177,8 +177,14 @@ class File2Image:
 
         try:
             if output_mode == 'dir':
+                if self.use_fountain_code:
+                    print("Fountain code not supported in dir mode for now.")
+                    exit(1)
                 self.output_file(result_queue, output_dir)
             elif output_mode == 'video':
+                if self.use_fountain_code:
+                    print("Fountain code not supported in dir mode for now.")
+                    exit(1)
                 self.output_video(result_queue, output_dir, fps=fps)
             elif output_mode == 'screen':
                 self.output_screen(result_queue, fps=fps, region=region)
@@ -284,6 +290,7 @@ if __name__ == "__main__":
     if args.sleep:
         print("Sleep 5 seconds to prepare...")
         time.sleep(5)
-    f2i = File2Image(method=args.method, nproc=args.nproc, qr_version=args.qr_version, qr_fit_factor=args.qr_fit_factor)
+    f2i = File2Image(method=args.method, qr_version=args.qr_version, qr_fit_factor=args.qr_fit_factor,
+                     use_fountain_code=args.use_fountain_code, nproc=args.nproc)
     f2i.convert(args.input, output_mode=args.mode,
                 output_dir=args.output_dir, region=args.region, fps=args.fps)
