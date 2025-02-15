@@ -6,6 +6,7 @@ from pyzbar.pyzbar import decode
 from PIL import Image
 import multiprocessing
 import tqdm
+from pixelbar import PixelBar
 from util import *
 
 def get_parser():
@@ -13,6 +14,9 @@ def get_parser():
         description="Convert a file to a series of QR codes.")
     parser.add_argument("-o", "--output",
                         default="decoded.txt", help="output file path.")
+    parser.add_argument(
+        "-M", "--method", default="qrcode", choices=['qrcode', 'pixelbar'], help="encoding method"
+    )
     # 三个参数对应三种模式
     parser.add_argument(
         "-m", "--mode",
@@ -28,14 +32,21 @@ def get_parser():
             "Offset startwith '-' means from right/bottom, 'c' means center")
     parser.add_argument("-w", "--win-title", help="screen_win32: title of window to capture")
     parser.add_argument("-n", "--nproc", type=int, default=-1, help="multiprocess")
+    parser.add_argument(
+        "-B", "--qr-box-size", type=int, default=20, help="QRcode box size"
+    )
     return parser
 
 class Image2File:
-    def __init__(self, nproc=1):
+    def __init__(self, method='qrcode', nproc=1, qr_box_size=None):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
             self.nproc = nproc
+        self.method = method
+        self.pb = PixelBar()
+        # self.pb = PixelBar(self.qr_version, box_size=self.qr_boxsize, border_size=self.qr_border, pixel_bits=8)
+        self.qr_box_size = qr_box_size
 
     def decode_qrcode(self, img):
         decoded = decode(img)
@@ -45,7 +56,12 @@ class Image2File:
         return base64.b32decode(data_)
     
     def parse_img(self, img):
-        raw_data = self.decode_qrcode(img)
+        if self.method == 'qrcode':
+            raw_data = self.decode_qrcode(img)
+        elif self.method == 'pixelbar':
+            raw_data = self.pb.decode(img, box_size=self.qr_box_size)
+        else:
+            raise ValueError("No encoding method specified.")
         if raw_data is None:
             return -1, -1, b''
         idx, num_chunks = struct.unpack('II', raw_data[:8])
@@ -183,8 +199,9 @@ if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
     args.win_title = os.getenv('CAPTURE_WINDOW', args.win_title)
-    i2f = Image2File(args.nproc)
-    i2f.convert(args.output, input_dir=args.input_dir,
+    i2f = Image2File(nproc=args.nproc, method = args.method, qr_box_size=args.qr_box_size)
+    i2f.convert(args.output,
                 mode=args.mode,
+                input_dir=args.input_dir,
                 region=args.region,
                 win_title=args.win_title)

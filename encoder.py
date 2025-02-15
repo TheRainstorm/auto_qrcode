@@ -13,6 +13,7 @@ import qrcode
 from PIL import Image, ImageTk
 import numpy as np
 import tkinter as tk
+from pixelbar import PixelBar
 from util import *
 
 
@@ -38,6 +39,9 @@ def get_parser():
             "Offset startwith '-' means from right/bottom, 'c' means center"
     )
     parser.add_argument(
+        "-M", "--method", default="qrcode", choices=['qrcode', 'pixelbar'], help="encoding method"
+    )
+    parser.add_argument(
         "-n", "--nproc", type=int, default=-1, help="multiprocess encoding"
     )
     parser.add_argument(
@@ -56,17 +60,19 @@ def get_parser():
     return parser
 
 class File2Image:
-    def __init__(self, nproc=1, qr_version=40, qr_fit_factor=1.5):
+    def __init__(self, method='qrcode', nproc=1, qr_version=40, qr_fit_factor=1.5):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
             self.nproc = nproc
+        self.method = method
         self.qr_version = qr_version
         self.qr_boxsize = 1
         self.qr_border = 1
         self.correction = qrcode.constants.ERROR_CORRECT_L
         self.qr_fit_factor = qr_fit_factor
-
+        self.pb = PixelBar(self.qr_version, box_size=self.qr_boxsize, border_size=self.qr_border, pixel_bits=8)
+        
     def encode_qrcode(self, data_):
         # qrcode 实际编码二进制数据时，实际对数据有要求，需要满足ISO/IEC 8859-1
         # 导致编码和解码后，得到错误数据，解决办法为使用base32编码（损耗6.25%）
@@ -82,18 +88,27 @@ class File2Image:
         qr.make(fit=True)
 
         img = qr.make_image(fill_color="black", back_color="white")
-        return np.array(img)
+        return img
+    
+    def encode_pixelbar(self, data):
+        return self.pb.encode(data)
 
     def process_chunk(self, i, chunk_data, result_queue):
-        img = self.encode_qrcode(chunk_data)
+        if self.method == 'qrcode':
+            img = self.encode_qrcode(chunk_data)
+        else:
+            img = self.encode_pixelbar(chunk_data)
         # print(f'pid {os.getpid()}: chunk {i}')
-        result_queue.put(img)
+        result_queue.put(np.array(img))
     
     def get_chunk_size(self):
-        qr_maxbytes = qrcode.util.BIT_LIMIT_TABLE[self.correction][self.qr_version]//8
-        base32_valid = int(qr_maxbytes/1.0625/1.1)  # 理论计算结果超出限制，除以 1.1 简单修正一下
-        print(f"QR code version {self.qr_version} corr: L max bytes: {qr_maxbytes} base32_valid: {base32_valid}")
-        return base32_valid - 8  # 8 bytes for header
+        if self.method == 'qrcode':
+            qr_maxbytes = qrcode.util.BIT_LIMIT_TABLE[self.correction][self.qr_version]//8
+            base32_valid = int(qr_maxbytes/1.0625/1.1)  # 理论计算结果超出限制，除以 1.1 简单修正一下
+            print(f"QR code version {self.qr_version} corr: L max bytes: {qr_maxbytes} base32_valid: {base32_valid}")
+            return base32_valid - 8  # 8 bytes for header
+        else:
+            return self.pb.max_data_size - 8
 
     def convert(self, file_path, output_mode='screen', output_dir="", fps=10, region=''):
         with open(file_path, "rb") as f:
@@ -169,7 +184,7 @@ class File2Image:
             img = Image.fromarray(image_ndarry)
             
             # resize image, otherwise label window will be too big
-            img_resized = img.resize((width, height), Image.LANCZOS)
+            img_resized = img.resize((width, height), Image.NEAREST)
         
             img_tk = ImageTk.PhotoImage(img_resized)
             img_tk_list.append(img_tk)
@@ -198,6 +213,6 @@ if __name__ == "__main__":
     if args.sleep:
         print("Sleep 5 seconds to prepare...")
         time.sleep(5)
-    f2i = File2Image(nproc=args.nproc, qr_version=args.qr_version, qr_fit_factor=args.qr_fit_factor)
+    f2i = File2Image(method=args.method, nproc=args.nproc, qr_version=args.qr_version, qr_fit_factor=args.qr_fit_factor)
     f2i.convert(args.input, output_mode=args.mode,
                 output_dir=args.output_dir, region=args.region, fps=args.fps)
