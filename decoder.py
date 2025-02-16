@@ -14,8 +14,8 @@ def get_parser():
     parser = argparse.ArgumentParser(
         description="Convert a file to a series of QR codes.")
     parser.add_argument("-o", "--output",
-                        default="decoded.txt", help="output file path.")
-    # 三个参数对应三种模式
+                        default="out.txt", help="output file path.")
+    # 从目录或者屏幕截图中获取数据
     parser.add_argument(
         "-m", "--mode",
         default="screen_dxcam", choices=['dir', 'screen_mss', 'screen_dxcam', 'screen_win32'],
@@ -200,27 +200,34 @@ class Image2File:
         
         if self.use_fountain_code:
             tim = timer()
-            idx = -1
             collected_idx = set()
-            file_data_size = -1
-            l3_pl_size = -1
-            num_chunks = -1
+            idx = file_data_size = l3_pl_size = num_chunks = -1
+            unrecv = True
+            progress = tqdm.tqdm(leave=False, mininterval=0.33, bar_format='{desc}')
             while True:
                 img = capture_img()
                 elap = tim.reset()
-                print(f"idx: {idx:5d} len/tot: {len(collected_idx):>5d}/{num_chunks:<5d} speed: {len(collected_idx)*l3_pl_size/tim.since_init():.2f} B/s each iter: {elap:.2f}s speed: {1/elap:.3f}fps \r", end='')
+                if unrecv:  # 未接收到数据
+                    progress.set_description(f"Recv speed: {len(collected_idx)*l3_pl_size/tim.since_init():.2f} B/s {1/elap:.3f}fps")
+                else:
+                    progress.set_description(f"Recv speed: {len(collected_idx)*l3_pl_size/tim.since_init():.2f} B/s")
+                    progress.update()
                 l3_pkt = self.get_l3_pkt_from_l2(img)
                 if l3_pkt is None:
                     continue
                 idx, file_data_size, l3_pl = self.parse_l3_pkt_fountain_code(l3_pkt)
-                if l3_pl_size == -1:  # 第一次接收到数据
+                if unrecv:  # 第一次接收到数据
+                    unrecv = False
                     tim = timer()   # 重置时钟
                     l3_pl_size = len(l3_pkt) - 8
                     num_chunks = (file_data_size + l3_pl_size - 1)// l3_pl_size
+                    progress.close()
+                    progress = tqdm.tqdm(total=num_chunks, leave=True, mininterval=0.33)
                 collected_idx.add(idx)
                 if l3_pl is not None:
                     print()
                     break
+            progress.close()
             self.data_merged = l3_pl
         else:
             num_chunks = remained = -1     # 总图片数

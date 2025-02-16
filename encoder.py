@@ -131,16 +131,16 @@ class File2Image:
         # print(f'pid {os.getpid()}: chunk {i}')
         result_queue.put(self.mk_l2_pkt(l3_pkt))
     
-    def output_l2_pkt_to_queue_fountain_code(self, pid, file_data, l3_pl_size, result_queue):
+    def output_l2_pkt_to_queue_fountain_code(self, pid, nproc, file_data, l3_pl_size, result_queue):
         enc = wirehair_encoder(file_data, l3_pl_size)
-        i = 0
+        i = pid
         while True:
-            while result_queue.qsize() > 60:
+            while result_queue.qsize() > 240:
                 time.sleep(0.1)
             
             l3_pl = enc.encode(i)
             l3_pkt = self.mk_l3_pkt_fountain_code(i, len(file_data), l3_pl)
-            i += 1
+            i += nproc
             result_queue.put(self.mk_l2_pkt(l3_pkt))
     
     def convert(self, file_path, output_mode='screen', output_dir="", fps=10, region=''):
@@ -164,9 +164,10 @@ class File2Image:
         if self.use_fountain_code:
             producers = []
             # use one process now, TODO: use multiple processes encoding
-            process = multiprocessing.Process(target=self.output_l2_pkt_to_queue_fountain_code, args=(0, file_data, l3_pl_size, result_queue))
-            process.start()
-            producers.append(process)
+            for pid in range(self.nproc):
+                process = multiprocessing.Process(target=self.output_l2_pkt_to_queue_fountain_code, args=(pid, self.nproc, file_data, l3_pl_size, result_queue))
+                process.start()
+                producers.append(process)
         else:
             pool = multiprocessing.Pool(processes=self.nproc)
             # multiprocessing encoding
@@ -237,6 +238,7 @@ class File2Image:
         if self.use_fountain_code:
             tim = timer()
             i = 0
+            progress = tqdm.tqdm(total=self.num_chunks, leave=True, mininterval=0.33, position=0)
             while True:
                 tim.reset()
                 image_ndarry = result_queue.get()
@@ -245,7 +247,7 @@ class File2Image:
                 # resize image, otherwise label window will be too big
                 img_resized = img.resize((width, height), Image.NEAREST)
 
-                print(f"current idx: {i}/{self.num_chunks}\r", end='')
+                progress.update()
                 img_tk = ImageTk.PhotoImage(img_resized)
                 e = tim.elapsed()
                 if e < 1 / fps:

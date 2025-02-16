@@ -17,7 +17,7 @@
 - [ ] wirehair 多进程下编解码
 - [ ] 更高效的编码方案，代替现有的 qrcode
 
-目前基于二维码只能达到 20KB/s，甚至不如 libcimbar 的 106 KB/s。
+目前基于二维码能达到 25KB/s，不如 libcimbar 的 106 KB/s。
 
 ## 依赖
 
