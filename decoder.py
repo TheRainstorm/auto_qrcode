@@ -23,39 +23,45 @@ def get_parser():
     )
     parser.add_argument("-i", "--input-dir", default='./out', help="dir: The dir containing the images to decode, use this for testing.")
     parser.add_argument(
-        "-r", "--region", default="",
+        "-R", "--region", default="",
         help="Screen_mss: screen region to capture, format: mon_id:width:height:offset_left:offset_top. "
             "mon_id is the monitor id, default 1. "
             "widht/height: int|d|w|h, 'd' means default 3/4*min(w,h). "
             "Offset startwith '-' means from right/bottom, 'c' means center")
-    parser.add_argument("-w", "--win-title", help="screen_win32: title of window to capture")
+    parser.add_argument("-W", "--win-title", help="screen_win32: title of window to capture")
     # L2
     parser.add_argument(
         "-M", "--method", default="qrcode", choices=['qrcode', 'pixelbar'], help="encoding method"
     )
-    # pixelbar 还不支持自动识别 boxsize，所以需要手动指定
+    # 用于自动计算 region 大小，并非解码需要
     parser.add_argument(
-        "-B", "--qr-box-size", type=int, default=20, help="QRcode box size"
+        "-Q", "--qr-version", type=int, default=40, help="QRcode version"
+    )
+    # pixelbar 还不支持自动识别 box_size，所以需要手动指定
+    parser.add_argument(
+        "-B", "--qr-box-size", type=float, default=1.5, help="QRcode box size"
     )
     # L3
     parser.add_argument(
-        "--not-use-fountain-code", dest='use_fountain_code', action='store_false', help="l3 encoding method"
+        "-F", "--not-use-fountain-code", dest='use_fountain_code', action='store_false', help="l3 encoding method"
     )
     parser.add_argument("-n", "--nproc", type=int, default=-1, help="multiprocess")
     return parser
 
 class Image2File:
-    def __init__(self, method='qrcode', nproc=1, qr_box_size=None, use_fountain_code=True):
+    def __init__(self, method='qrcode', nproc=1, qr_box_size=1.5, use_fountain_code=True, qr_version=40):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
             self.nproc = nproc
         self.method = method
         self.pb = PixelBar()
-        # self.pb = PixelBar(self.qr_version, box_size=self.qr_boxsize, border_size=self.qr_border, pixel_bits=8)
         self.qr_box_size = qr_box_size
         self.use_fountain_code = use_fountain_code
         self.dec = None
+        # 仅用于自动计算 region
+        self.qr_version = qr_version
+        self.qr_border = 1
 
     def decode_qrcode(self, img):
         decoded = decode(img)
@@ -69,7 +75,7 @@ class Image2File:
         if self.method == 'qrcode':
             raw_data = self.decode_qrcode(img)
         elif self.method == 'pixelbar':
-            raw_data = self.pb.decode(img, box_size=self.qr_box_size)
+            raw_data = self.pb.decode(img, box_size=int(self.qr_box_size))
         else:
             raise ValueError("No encoding method specified.")
         return raw_data
@@ -87,19 +93,10 @@ class Image2File:
             self.dec = wirehair_decoder(file_data_size, l3_pl_size)
         l3_pl = self.dec.decode(idx, l3_pl_raw)
         return idx, file_data_size, l3_pl
-        
-    def parse_img(self, img):
-        raw_data = self.get_l3_pkt_from_l2(img)
-        if raw_data is None:
-            return -1, -1, b''
-        idx, num_chunks = struct.unpack('II', raw_data[:8])
-        data = raw_data[8:]
-        return idx, num_chunks, data
     
     def process_image(self, file_path, result_queue):
-        # read image
+        # not fountain code, decoding process
         img = Image.open(file_path)
-        
         idx, _, data = self.parse_l3_pkt(self.get_l3_pkt_from_l2(img))
         result_queue.put((idx, data))
         # print(f'pid {os.getpid()}: file {file_path} image {idx}')
@@ -155,13 +152,14 @@ class Image2File:
         self.data_merged = b"".join([d for d in data_list])
 
     def input_from_screen(self, capture_method, region='', win_title=''):
+        fit_pixel = int((self.qr_version * 4 + 21 + 2*self.qr_border) * self.qr_box_size) # default 1.5, version 40 -> 275x275, can be distinguished
         if capture_method == 'mss':
             import mss
             region_split = region.split(':')
             sct = mss.mss()
             mon_id = parse_region_mon(region_split)
             mon = sct.monitors[mon_id]
-            width, height, x, y = parse_region(region_split[1:], mon["width"], mon["height"])
+            width, height, x, y = parse_region(region_split[1:], mon["width"], mon["height"], fit_pixel=fit_pixel)
             
             # The screen part to capture
             monitor = {
@@ -181,7 +179,7 @@ class Image2File:
             region_split = region.split(':')
             mon_id = parse_region_mon(region_split) - 1 # 0 based
             camera = dxcam.create(output_idx=mon_id, output_color="RGB")
-            width, height, x, y = parse_region(region_split[1:], camera.width, camera.height)
+            width, height, x, y = parse_region(region_split[1:], camera.width, camera.height, fit_pixel=fit_pixel)
             region = (x, y, x + width, y + height)
             print(f"Screen: {mon_id+1}[{camera.width}x{camera.height}], Capture region: {width}x{height}+{x}+{y}")
             
@@ -207,15 +205,15 @@ class Image2File:
             while True:
                 img = capture_img()
                 elap = tim.reset()
-                if unrecv:  # 未接收到数据
-                    progress.set_description(f"Recv speed: {len(collected_idx)*l3_pl_size/tim.since_init():.2f} B/s {1/elap:.3f}fps")
-                else:
-                    progress.set_description(f"Recv speed: {len(collected_idx)*l3_pl_size/tim.since_init():.2f} B/s")
-                    progress.update()
                 l3_pkt = self.get_l3_pkt_from_l2(img)
-                if l3_pkt is None:
+                if l3_pkt is None: # 未接收到数据
+                    progress.set_description(f"speed: {len(collected_idx)*l3_pl_size/tim.since_init():.2f} B/s {1/elap:.3f}fps")
                     continue
                 idx, file_data_size, l3_pl = self.parse_l3_pkt_fountain_code(l3_pkt)
+                if idx not in collected_idx:
+                    progress.set_description(f"Idx: {idx} speed: {len(collected_idx)*l3_pl_size/tim.since_init():.2f} B/s")
+                    progress.update()
+                    collected_idx.add(idx)
                 if unrecv:  # 第一次接收到数据
                     unrecv = False
                     tim = timer()   # 重置时钟
@@ -223,7 +221,6 @@ class Image2File:
                     num_chunks = (file_data_size + l3_pl_size - 1)// l3_pl_size
                     progress.close()
                     progress = tqdm.tqdm(total=num_chunks, leave=True, mininterval=0.33)
-                collected_idx.add(idx)
                 if l3_pl is not None:
                     print()
                     break
@@ -240,7 +237,11 @@ class Image2File:
                 elap = tim.reset()
                 print(f"max: {max_idx:5d}{' ' if max_idx<= len(collected) else 'M'} len/tot: {len(collected):>5d}/{num_chunks:<5d} speed: {decoded_bytes/tim.since_init():.2f} B/s each iter: {elap:.2f}s speed: {1/elap:.3f}fps \r", end='')
                 
-                idx, num_chunks, data = self.parse_img(img)
+                l3_pkt = self.get_l3_pkt_from_l2(img)
+                if l3_pkt is None:
+                    continue
+                idx, num_chunks, data = self.parse_l3_pkt(l3_pkt)
+                
                 if idx == -1:  # parse empty
                     continue
                 
@@ -263,7 +264,8 @@ if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
     args.win_title = os.getenv('CAPTURE_WINDOW', args.win_title)
-    i2f = Image2File(nproc=args.nproc, method = args.method, qr_box_size=args.qr_box_size)
+    i2f = Image2File(nproc=args.nproc, method = args.method, qr_box_size=args.qr_box_size,
+                     use_fountain_code=args.use_fountain_code, qr_version=args.qr_version)
     i2f.convert(args.output,
                 mode=args.mode,
                 input_dir=args.input_dir,

@@ -33,7 +33,7 @@ def get_parser():
         "-o", "--output-dir", default="./out", help="dir/video: output image/video directory"
     )
     parser.add_argument(
-        "-r", "--region", default="",
+        "-R", "--region", default="",
         help="screen: display region, width:height:offset_left:offset_top. "
             "widht/height: int|d|w|h|f, 'd' means default 3/4*min(w,h). f: QR code fit pixel. "
             "Offset startwith '-' means from right/bottom, 'c' means center"
@@ -46,38 +46,34 @@ def get_parser():
         "-Q", "--qr-version", type=int, default=40, help="QRcode version"
     )
     parser.add_argument(
-        "-f", "--qr-fit-factor", type=float, default=1.5, help="QRcode fit pixel=(25+4*version+2(border))*fit_factor"
+        "-B", "--qr-box-size", type=float, default=1.5, help="QRcode pixels=(21+4*version+2(border))*box_size, When use screen output, can be float. "
     )
     # L3
     parser.add_argument(
-        "--not-use-fountain-code", dest='use_fountain_code', action='store_false', help="l3 encoding method"
+        "-F", "--not-use-fountain-code", dest='use_fountain_code', action='store_false', help="l3 encoding method"
     )
     # misc
     parser.add_argument(
         "-n", "--nproc", type=int, default=-1, help="multiprocess encoding"
     )
     parser.add_argument(
-        "-F", "--fps", type=int, default=10, help="output screen display image fps"
-    )
-    parser.add_argument(
-        "-S", "--sleep", action='store_true', help="sleep 5 seconds to prepare"
+        "-f", "--fps", type=int, default=60, help="output screen display image fps"
     )
     
     return parser
 
 class File2Image:
-    def __init__(self, method='qrcode', nproc=1, qr_version=40, qr_fit_factor=1.5, use_fountain_code=True):
+    def __init__(self, method='qrcode', nproc=1, qr_version=40, qr_box_size=1.5, use_fountain_code=True):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
             self.nproc = nproc
         self.method = method
         self.qr_version = qr_version
-        self.qr_boxsize = 1
-        self.qr_border = 1
         self.correction = qrcode.constants.ERROR_CORRECT_L
-        self.qr_fit_factor = qr_fit_factor
-        self.pb = PixelBar(self.qr_version, box_size=self.qr_boxsize, border_size=self.qr_border, pixel_bits=8)
+        self.qr_box_size = qr_box_size
+        self.qr_border = 1
+        self.pb = PixelBar(self.qr_version, box_size=int(self.qr_box_size), border_size=self.qr_border, pixel_bits=8)
         self.use_fountain_code = use_fountain_code   # 不断产生新的编码块，直到解码成功
         
     def encode_qrcode(self, data_):
@@ -88,7 +84,7 @@ class File2Image:
         qr = qrcode.QRCode(
             version=self.qr_version,
             error_correction=self.correction,
-            box_size=self.qr_boxsize,   # in pixels
+            box_size=int(self.qr_box_size),   # in pixels
             border=self.qr_border,
         )
         qr.add_data(data)
@@ -133,7 +129,7 @@ class File2Image:
     
     def output_l2_pkt_to_queue_fountain_code(self, pid, nproc, file_data, l3_pl_size, result_queue):
         enc = wirehair_encoder(file_data, l3_pl_size)
-        i = pid
+        i = pid # interleave 到每个进程
         while True:
             while result_queue.qsize() > 240:
                 time.sleep(0.1)
@@ -179,12 +175,12 @@ class File2Image:
         try:
             if output_mode == 'dir':
                 if self.use_fountain_code:
-                    print("Fountain code not supported in dir mode for now.")
+                    print("Fountain code not support dir mode for now.")
                     exit(1)
                 self.output_file(result_queue, output_dir)
             elif output_mode == 'video':
                 if self.use_fountain_code:
-                    print("Fountain code not supported in dir mode for now.")
+                    print("Fountain code not support video mode for now.")
                     exit(1)
                 self.output_video(result_queue, output_dir, fps=fps)
             elif output_mode == 'screen':
@@ -216,7 +212,7 @@ class File2Image:
 
     def output_screen(self, result_queue, fps=1, region=''):
         root = tk.Tk()
-        fit_pixel = int((self.qr_version * 4 + 21 + 2*self.qr_border) * self.qr_fit_factor) # default times 1.5, version 40 -> 275x275
+        fit_pixel = int((self.qr_version * 4 + 21 + 2*self.qr_border) * self.qr_box_size) # default 1.5, version 40 -> 275x275, can be distinguished
         width, height, x, y = parse_region(region.split(':'), root.winfo_screenwidth(), root.winfo_screenheight(), fit_pixel=fit_pixel)
         root.overrideredirect(True) # no window border (also no close button)
         root.geometry(f'{width}x{height}+{x}+{y}')
@@ -289,10 +285,7 @@ class File2Image:
 if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
-    if args.sleep:
-        print("Sleep 5 seconds to prepare...")
-        time.sleep(5)
-    f2i = File2Image(method=args.method, qr_version=args.qr_version, qr_fit_factor=args.qr_fit_factor,
+    f2i = File2Image(method=args.method, qr_version=args.qr_version, qr_box_size=args.qr_box_size,
                      use_fountain_code=args.use_fountain_code, nproc=args.nproc)
     f2i.convert(args.input, output_mode=args.mode,
                 output_dir=args.output_dir, region=args.region, fps=args.fps)
