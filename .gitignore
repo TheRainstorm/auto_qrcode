@@ -3,3 +3,10 @@ tmp
 test_tmp
 *.png
 __pycache__
+.vscode
+*.txt
+*.bin
+
+cimbar
+pywirehair
+wirehair

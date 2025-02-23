@@ -40,7 +40,7 @@ def get_parser():
     )
     # L2
     parser.add_argument(
-        "-M", "--method", default="qrcode", choices=['qrcode', 'pixelbar'], help="encoding method"
+        "-M", "--method", default="qrcode", choices=['qrcode', 'pixelbar', 'cimbar'], help="encoding method"
     )
     parser.add_argument(
         "-Q", "--qr-version", type=int, default=40, help="QRcode version"
@@ -74,6 +74,7 @@ class File2Image:
         self.qr_box_size = qr_box_size
         self.qr_border = 1
         self.pb = PixelBar(self.qr_version, box_size=int(self.qr_box_size), border_size=self.qr_border, pixel_bits=8)
+        self.cb = None
         
     def encode_qrcode(self, data_):
         # qrcode 实际编码二进制数据时，实际对数据有要求，需要满足ISO/IEC 8859-1
@@ -101,17 +102,27 @@ class File2Image:
             base32_valid = int(qr_maxbytes/1.0625/1.1)  # 理论计算结果超出限制，除以 1.1 简单修正一下
             print(f"QR code version {self.qr_version} corr: L max bytes: {qr_maxbytes} base32_valid: {base32_valid}")
             return base32_valid - 1
-        else:
+        elif self.method == 'pixelbar':
             return self.pb.max_data_size - 1
-        
+        elif self.method == 'cimbar':
+            return 7000 - 1
+        else:
+            return 0
     def mk_l2_pkt(self, l3_pkt):
         l3_proto = 1 if self.use_fountain_code else 0  # 编码 L3 使用的协议
         l2_header = struct.pack("B", l3_proto)
         l2_pkt = l2_header + l3_pkt
         if self.method == 'qrcode':
             img = self.encode_qrcode(l2_pkt)
-        else:
+        elif self.method == 'pixelbar':
             img = self.encode_pixelbar(l2_pkt)
+        elif self.method == 'cimbar':
+            if not self.cb:
+                import cimbar
+                self.cb = cimbar.Cimbar()
+            return self.cb.encode0(l2_pkt)
+        else:
+            return None
         return np.array(img)
 
     def get_l3_pl_size(self, l2_pl_size):
@@ -148,9 +159,9 @@ class File2Image:
         print(f"File size: {len(file_data)} bytes.")
 
         l2_pl_size = self.get_l2_pl_size()
-        print(f"L2 payload size: {l2_pl_size} bytes.")
+        print(f"L2 max payload size: {l2_pl_size} bytes.")
         l3_pl_size = self.get_l3_pl_size(l2_pl_size)
-        print(f"L3 payload size: {l3_pl_size} bytes.")
+        print(f"L3 max payload size: {l3_pl_size} bytes.")
         
         self.num_chunks = math.ceil(len(file_data) / l3_pl_size)
         print(f"num_chunks(l3_pkt_num): {self.num_chunks}")

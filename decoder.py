@@ -6,7 +6,6 @@ from pyzbar.pyzbar import decode
 from PIL import Image
 import multiprocessing
 import tqdm
-from pixelbar import PixelBar
 from util import *
 from pywirehair import decoder as wirehair_decoder
 
@@ -31,7 +30,7 @@ def get_parser():
     parser.add_argument("-W", "--win-title", help="screen_win32: title of window to capture")
     # L2
     parser.add_argument(
-        "-M", "--method", default="qrcode", choices=['qrcode', 'pixelbar'], help="encoding method"
+        "-M", "--method", default="qrcode", choices=['qrcode', 'pixelbar', 'cimbar'], help="encoding method"
     )
     # 用于自动计算 region 大小，并非解码需要
     parser.add_argument(
@@ -55,13 +54,14 @@ class Image2File:
         else:
             self.nproc = nproc
         self.method = method
-        self.pb = PixelBar()
+        self.pb = None
         self.qr_box_size = qr_box_size
         self.use_fountain_code = False
         self.dec = None
         # 仅用于自动计算 region
         self.qr_version = qr_version
         self.qr_border = 1
+        self.cb = None  # cimbar
 
     def decode_qrcode(self, img):
         decoded = decode(img)
@@ -75,7 +75,15 @@ class Image2File:
         if self.method == 'qrcode':
             l2_pkt = self.decode_qrcode(img)
         elif self.method == 'pixelbar':
+            if not self.pb:
+                from pixelbar import PixelBar
+                self.pb = PixelBar()
             l2_pkt = self.pb.decode(img, box_size=int(self.qr_box_size))
+        elif self.method == 'cimbar':
+            if not self.cb:
+                import cimbar
+                self.cb = cimbar.Cimbar()
+            l2_pkt = self.cb.decode(img)
         else:
             raise ValueError("No encoding method specified.")
         if l2_pkt is None:
@@ -123,6 +131,7 @@ class Image2File:
             if self.use_fountain_code:
                 print("Fountain code not supported in dir mode for now.")
                 exit(1)
+            print(f"mode: {mode} input_dir: {input_dir}")
             self.input_from_dir(input_dir)
         else:
             raise ValueError("No input source specified.")
@@ -149,6 +158,8 @@ class Image2File:
         for file in file_list:
             pool.apply_async(self.process_image, (os.path.join(input_dir, file), result_queue))
         pool.close()
+        # for file in file_list:
+        #     self.process_image(os.path.join(input_dir, file), result_queue)
         
         data_list = [b'' for _ in range(num_images)]
         for i in tqdm.tqdm(range(num_images)):
@@ -175,7 +186,7 @@ class Image2File:
                 "height": height,
                 "mon": mon_id,
             }
-            print(f"Screen: {mon_id}[{mon["width"]}x{mon["height"]}], Capture region: {width}x{height}+{x}+{y}")
+            print(f'Screen: {mon_id}[{mon["width"]}x{mon["height"]}], Capture region: {width}x{height}+{x}+{y}')
             
             def capture_img():
                 sct_img = sct.grab(monitor)
@@ -195,6 +206,7 @@ class Image2File:
                 # frame = camera.grab(region=region)
                 return Image.fromarray(frame)
         else:
+            from util_decode import get_hwnd, getSnapshot
             hwnd = get_hwnd(win_title)
             def capture_img():
                 return getSnapshot(hwnd)
