@@ -63,7 +63,7 @@ def get_parser():
     return parser
 
 class File2Image:
-    def __init__(self, method='qrcode', nproc=1, qr_version=40, qr_box_size=1.5, use_fountain_code=True):
+    def __init__(self, method='qrcode', nproc=1, qr_version=40, qr_box_size=1.5):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
@@ -74,7 +74,6 @@ class File2Image:
         self.qr_box_size = qr_box_size
         self.qr_border = 1
         self.pb = PixelBar(self.qr_version, box_size=int(self.qr_box_size), border_size=self.qr_border, pixel_bits=8)
-        self.use_fountain_code = use_fountain_code   # 不断产生新的编码块，直到解码成功
         
     def encode_qrcode(self, data_):
         # qrcode 实际编码二进制数据时，实际对数据有要求，需要满足ISO/IEC 8859-1
@@ -101,15 +100,18 @@ class File2Image:
             qr_maxbytes = qrcode.util.BIT_LIMIT_TABLE[self.correction][self.qr_version]//8
             base32_valid = int(qr_maxbytes/1.0625/1.1)  # 理论计算结果超出限制，除以 1.1 简单修正一下
             print(f"QR code version {self.qr_version} corr: L max bytes: {qr_maxbytes} base32_valid: {base32_valid}")
-            return base32_valid
+            return base32_valid - 1
         else:
-            return self.pb.max_data_size
+            return self.pb.max_data_size - 1
         
     def mk_l2_pkt(self, l3_pkt):
+        l3_proto = 1 if self.use_fountain_code else 0  # 编码 L3 使用的协议
+        l2_header = struct.pack("B", l3_proto)
+        l2_pkt = l2_header + l3_pkt
         if self.method == 'qrcode':
-            img = self.encode_qrcode(l3_pkt)
+            img = self.encode_qrcode(l2_pkt)
         else:
-            img = self.encode_pixelbar(l3_pkt)
+            img = self.encode_pixelbar(l2_pkt)
         return np.array(img)
 
     def get_l3_pl_size(self, l2_pl_size):
@@ -139,7 +141,8 @@ class File2Image:
             i += nproc
             result_queue.put(self.mk_l2_pkt(l3_pkt))
     
-    def convert(self, file_path, output_mode='screen', output_dir="", fps=10, region=''):
+    def convert(self, file_path, output_mode='screen', output_dir="", fps=10, region='', use_fountain_code=True):
+        self.use_fountain_code = use_fountain_code   # 不断产生新的编码块，直到解码成功
         with open(file_path, "rb") as f:
             file_data = f.read()
         print(f"File size: {len(file_data)} bytes.")
@@ -151,6 +154,9 @@ class File2Image:
         
         self.num_chunks = math.ceil(len(file_data) / l3_pl_size)
         print(f"num_chunks(l3_pkt_num): {self.num_chunks}")
+        if self.num_chunks <= 1:
+            self.use_fountain_code = False
+            print("Disable fountain code, because of single chunk.")
         
         manager = multiprocessing.Manager()
         result_queue = manager.Queue()
@@ -286,6 +292,6 @@ if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
     f2i = File2Image(method=args.method, qr_version=args.qr_version, qr_box_size=args.qr_box_size,
-                     use_fountain_code=args.use_fountain_code, nproc=args.nproc)
-    f2i.convert(args.input, output_mode=args.mode,
+                     nproc=args.nproc)
+    f2i.convert(args.input, output_mode=args.mode, use_fountain_code=args.use_fountain_code, 
                 output_dir=args.output_dir, region=args.region, fps=args.fps)

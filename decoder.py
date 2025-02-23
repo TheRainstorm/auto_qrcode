@@ -41,15 +41,15 @@ def get_parser():
     parser.add_argument(
         "-B", "--qr-box-size", type=float, default=1.5, help="QRcode box size"
     )
-    # L3
-    parser.add_argument(
-        "-F", "--not-use-fountain-code", dest='use_fountain_code', action='store_false', help="l3 encoding method"
-    )
+    # # L3
+    # parser.add_argument(
+    #     "-F", "--not-use-fountain-code", dest='use_fountain_code', action='store_false', help="l3 encoding method"
+    # )
     parser.add_argument("-n", "--nproc", type=int, default=-1, help="multiprocess")
     return parser
 
 class Image2File:
-    def __init__(self, method='qrcode', nproc=1, qr_box_size=1.5, use_fountain_code=True, qr_version=40):
+    def __init__(self, method='qrcode', nproc=1, qr_box_size=1.5, qr_version=40):
         if nproc <= 0:
             self.nproc = multiprocessing.cpu_count() - 1
         else:
@@ -57,7 +57,7 @@ class Image2File:
         self.method = method
         self.pb = PixelBar()
         self.qr_box_size = qr_box_size
-        self.use_fountain_code = use_fountain_code
+        self.use_fountain_code = False
         self.dec = None
         # 仅用于自动计算 region
         self.qr_version = qr_version
@@ -73,12 +73,18 @@ class Image2File:
     def get_l3_pkt_from_l2(self, img):
         '''l2_pkt ->l3_pkt'''
         if self.method == 'qrcode':
-            raw_data = self.decode_qrcode(img)
+            l2_pkt = self.decode_qrcode(img)
         elif self.method == 'pixelbar':
-            raw_data = self.pb.decode(img, box_size=int(self.qr_box_size))
+            l2_pkt = self.pb.decode(img, box_size=int(self.qr_box_size))
         else:
             raise ValueError("No encoding method specified.")
-        return raw_data
+        if l2_pkt is None:
+            return None
+        l2_header = l2_pkt[0]
+        if l2_header == 1:
+            self.use_fountain_code = True
+        
+        return l2_pkt[1:]
     
     def parse_l3_pkt(self, l3_pkt):
         idx, num_chunks = struct.unpack('II', l3_pkt[:8])
@@ -193,8 +199,20 @@ class Image2File:
             def capture_img():
                 return getSnapshot(hwnd)
         
-        img = capture_img()
-        img.save("first.png") # write the first image to disk
+        # get first pkt
+        tim = timer()
+        progress = tqdm.tqdm(leave=False, mininterval=0.33, bar_format='{desc}')
+        while True:
+            img = capture_img()
+            elap = tim.reset()
+            l3_pkt = self.get_l3_pkt_from_l2(img)       #set self.use_fountain_code
+            if l3_pkt is None: # 未接收到数据
+                progress.set_description(f"capture {1/elap:.3f}fps")
+                continue
+            print(f"L3 mode: {'fountain code' if self.use_fountain_code else 'normal'}")
+            img.save("first.png") # write the first image to disk
+            progress.close()
+            break
         
         if self.use_fountain_code:
             tim = timer()
@@ -264,8 +282,7 @@ if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
     args.win_title = os.getenv('CAPTURE_WINDOW', args.win_title)
-    i2f = Image2File(nproc=args.nproc, method = args.method, qr_box_size=args.qr_box_size,
-                     use_fountain_code=args.use_fountain_code, qr_version=args.qr_version)
+    i2f = Image2File(nproc=args.nproc, method = args.method, qr_box_size=args.qr_box_size, qr_version=args.qr_version)
     i2f.convert(args.output,
                 mode=args.mode,
                 input_dir=args.input_dir,
