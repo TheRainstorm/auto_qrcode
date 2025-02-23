@@ -262,7 +262,7 @@ class File2Image:
                 img_resized = img.resize((width, height), Image.NEAREST)
             
                 img_tk = ImageTk.PhotoImage(img_resized)
-                if self.use_fountain_code: img_tk_list.append(img_tk)
+                if not self.use_fountain_code: img_tk_list.append(img_tk)
                 e = tim.elapsed()
                 if e < 1 / fps:
                     time.sleep(1 / fps - e)
