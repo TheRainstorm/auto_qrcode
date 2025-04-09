@@ -157,6 +157,7 @@ class File2Image:
         with open(file_path, "rb") as f:
             file_data = f.read()
         print(f"File size: {len(file_data)} bytes.")
+        print(f"MD5: {md5sum(file_path)}")
 
         l2_pl_size = self.get_l2_pl_size()
         print(f"L2 max payload size: {l2_pl_size} bytes.")

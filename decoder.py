@@ -140,6 +140,7 @@ class Image2File:
             f.write(self.data_merged)
         elap = tim.elapsed()
         print(f"output to {output_file} size: {len(self.data_merged)}B elpased: {elap:.0f}s speed {len(self.data_merged)/elap:.2f} B/s.")
+        print(f"MD5: {md5sum(output_file)}")
 
     def input_from_dir(self, input_dir):
         file_list = []

@@ -1,7 +1,16 @@
+import hashlib
 import subprocess
 import time
 import os
 from PIL import Image
+
+# Function to compute MD5 hash of a file
+def md5sum(file_path):
+    hash_md5 = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
 
 class timer():
     def __init__(self):
