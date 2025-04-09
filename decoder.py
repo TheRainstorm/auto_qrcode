@@ -81,14 +81,18 @@ class Image2File:
             l2_pkt = self.pb.decode(img, box_size=int(self.qr_box_size))
         elif self.method == 'cimbar':
             if not self.cb:
-                import cimbar
+                from pycimbar import cimbar
                 self.cb = cimbar.Cimbar()
             l2_pkt = self.cb.decode(img)
         else:
             raise ValueError("No encoding method specified.")
-        if l2_pkt is None:
+        if l2_pkt is None or len(l2_pkt) == 0:
             return None
-        l2_header = l2_pkt[0]
+        try:
+            l2_header = l2_pkt[0]
+        except:
+            print(f"l2_pkt: {l2_pkt}")
+            exit(1)
         if l2_header == 1:
             self.use_fountain_code = True
         

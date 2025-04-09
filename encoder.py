@@ -105,7 +105,10 @@ class File2Image:
         elif self.method == 'pixelbar':
             return self.pb.max_data_size - 1
         elif self.method == 'cimbar':
-            return 7000 - 1
+            if not self.cb:
+                from pycimbar import cimbar
+                self.cb = cimbar.Cimbar()
+            return self.cb.get_capacity() - 1
         else:
             return 0
     def mk_l2_pkt(self, l3_pkt):
@@ -117,10 +120,7 @@ class File2Image:
         elif self.method == 'pixelbar':
             img = self.encode_pixelbar(l2_pkt)
         elif self.method == 'cimbar':
-            if not self.cb:
-                import cimbar
-                self.cb = cimbar.Cimbar()
-            return self.cb.encode0(l2_pkt)
+            return self.cb.encode_np(l2_pkt)
         else:
             return None
         return np.array(img)
